@@ -154,7 +154,13 @@ pip3 install "${PIP_ARGS[@]}" 'scikit-learn==1.0.2'
 pip3 install "${PIP_ARGS[@]}" --ignore-installed 'setuptools==61.0.0'
 # This is to avoid ERROR: No matching distribution found for opencv-python-headless==4.5.2.52.
 # TODO: Make this the same as ${DV_GCP_OPTIMIZED_TF_WHL_VERSION}" later
-pip3 install "${PIP_ARGS[@]}"  "tf-models-official==2.13.1"
+# tf-models-official depends on tensorflow-text which has no aarch64 wheel.
+# Only needed for training (train.py), not inference. Install without deps on ARM64.
+if [ "$(uname -m)" = "aarch64" ]; then
+  pip3 install "${PIP_ARGS[@]}" --no-deps "tf-models-official==2.13.1" || true
+else
+  pip3 install "${PIP_ARGS[@]}" "tf-models-official==2.13.1"
+fi
 
 ################################################################################
 # TensorFlow

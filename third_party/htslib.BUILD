@@ -222,7 +222,8 @@ genrule(
         echo '#define HAVE_MEMORY_H 1'
         echo '#define HAVE_MMAP 1'
         # ARM64: use NEON instead of x86 SSE/POPCNT
-        if [ "$(uname -m)" = "aarch64" ]; then
+        # Note: $$(uname -m) uses $$ to escape Bazel Make variable substitution
+        if [ "$$(uname -m)" = "aarch64" ]; then
           echo '#define HAVE_NEON 1'
         else
           echo '#define HAVE_POPCNT 1'

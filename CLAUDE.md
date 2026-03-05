@@ -42,8 +42,8 @@ The `call_variants` step runs Inception V3 (23.9M params) CNN inference on 100×
 |---------|----------------|----------|--------------------------|--------|
 | **TF OneDNN+ACL** | All ARM64 CPUs | Production | **Baseline winner** on Neoverse-N1[7] | Low |
 | **TF OneDNN+ACL + BF16 fast math** | Graviton3+ (Neoverse V1/V2) | Production | Est. 20-40% over FP32 (ResNet-50 proxy)[7] | Config |
-| **INT8 quantization (ONNX dynamic)** | All ARM64 CPUs (ORT >= 1.17) | Production | Est. 1.5-2x over FP32 | Medium |
-| **INT8 quantization (ONNX static)** | All ARM64 CPUs (ORT >= 1.17) | Production | Est. 2-4x over FP32 (fragile, needs validation) | Medium |
+| **INT8 quantization (ONNX dynamic)** | All ARM64 CPUs (ORT >= 1.17) | **BROKEN** | ConvInteger op unsupported on ARM64 CPUExecutionProvider | N/A |
+| **INT8 quantization (ONNX static)** | All ARM64 CPUs (ORT >= 1.17) | Production | **2.3x over ONNX FP32 (measured)**, matches BF16 | Done |
 | **ONNX Runtime (CPUExecutionProvider)** | All ARM64 CPUs | Production | **24% slower** than TF+OneDNN (measured)[6] | Done |
 | **ONNX Runtime (MLAS BF16)** | Graviton3+ only | Production | 35-65% over ONNX CPU (NLP workloads; CNN gains lower) | Config |
 | **EfficientNet-B3 (model swap)** | Any backend | **DEAD END** | **3x slower** on CPU (measured) — depthwise convs have poor GEMM density | Done |
@@ -63,7 +63,7 @@ The `call_variants` step runs Inception V3 (23.9M params) CNN inference on 100×
 **Phase 2 (Inference acceleration — revised after literature review + experiments):**
 - **2A: TF OneDNN warmup (DONE)** — SavedModel warmup gives ~4% call_variants improvement. KMP_AFFINITY and TF_ONEDNN_USE_SYSTEM_ALLOCATOR are **HARMFUL** (30% regression, reverted).
 - **2B: BF16 on Graviton3+ (TODO)** — `DNNL_DEFAULT_FPMATH_MODE=BF16` already configured. Expected 20-40% CNN speedup. Needs Graviton3 hardware (AWS c7g) to benchmark.
-- **2C: INT8 quantization of InceptionV3 (TODO)** — Dynamic (1.5-2x) or static (2-4x) quantization via ONNX Runtime. InceptionV3 is fragile to quantize; must validate on HG002 with stratified regions.
+- **2C: INT8 quantization of InceptionV3 (DONE)** — Static INT8 via ONNX Runtime gives 2.3x over ONNX FP32 but matches BF16 (no additional gain on Graviton3). Viable alternative for non-BF16 platforms. Dynamic INT8 unsupported on ARM64 (ConvInteger op missing).
 - **~~2D: EfficientNet-B3~~** — **DEAD END.** 3x slower on CPU. Depthwise separable convolutions have poor GEMM density. This generalizes to ALL "efficient" CNN architectures (MobileNetV2, MnasNet, etc.). See `TRAINING_EXPERIMENT.md`.
 
 **Phase 2 ONNX status:** The `--use_onnx` flag is implemented and works. On Neoverse-N1 (no BF16), ONNX CPUExecutionProvider is slower than TF+OneDNN. On Graviton3+ (BF16), enabling `mlas.enable_gemm_fastmath_arm64_bfloat16` may reverse this — needs benchmarking on actual Graviton hardware.
@@ -212,33 +212,55 @@ Benchmarked on AWS c7g.4xlarge (16 vCPU Graviton3, Neoverse V1). Full chr20, 2 r
 
 **Note:** BF16 and INT8 are mutually exclusive for quantized layers. BF16 accelerates FP32 GEMM via BFMMLA; INT8 replaces those same GEMMs with INT8 SMMLA. Only mixed-precision combines both.
 
-### 2.2c INT8 Quantization of InceptionV3 (TODO — highest priority)
+### 2.2c INT8 Quantization of InceptionV3 (DONE — 2.3x over ONNX FP32, matches BF16)
 
-**Goal:** Close the gap with Google's x86 reference (96 vCPU, ~1.3 hr, $5.01/genome). Current BF16 at 16 vCPU: ~6.5 hr, $3.76/genome. With INT8 + more cores (32 vCPU) + fast_pipeline: target ~2.5 hr at ~$3.00/genome.
+Benchmarked static INT8 quantization via ONNX Runtime on AWS c7g.4xlarge (16 vCPU Graviton3).
 
-**Strategy: Three levers:**
-1. More cores (16 → 32 vCPU): ~1.5x wall time reduction
-2. INT8 quantization: ~2x call_variants speedup over FP32 baseline
-3. fast_pipeline (concurrent ME + CV): ~1.3x wall time reduction (conservative)
-Combined: 1.5 × 2 × 1.3 = ~3.9x potential
+**Quantization details:**
+- Static INT8 with Percentile calibration (99.99), QDQ format, 500 calibration samples
+- Dynamic INT8 **does not work** on ARM64 — produces `ConvInteger(10)` ops unsupported by CPUExecutionProvider
+- Model size: 83.1 MB (FP32) → 21.2 MB (INT8), 74% smaller
+- ORT 1.23.2, `CPUExecutionProvider`
 
-**INT8 approach:** ONNX dynamic quantization first (weights only, safest), then static quantization with calibration if insufficient. Requires ORT >= 1.17.0 for ARM64 INT8 MLAS kernels with SMMLA support.
+**Benchmark results (isolated ONNX, chr20 ~80K images):**
 
-- Dynamic INT8: Expected ~1.5-2x over ONNX FP32. Batch size sweep {64, 128, 256, 512} needed — INT8 SMMLA utilization scales with batch size.
-- Static INT8: Expected 2-4x over ONNX FP32. Requires calibration dataset (500 pileup images from TFRecords). Use Percentile calibration (99.99), NOT MinMax (InceptionV3 has long-tailed activations from concatenated Inception modules).
+| Model | bs=64 | bs=128 | bs=256 | bs=512 |
+|-------|-------|--------|--------|--------|
+| FP32 ONNX | 0.521 s/100 | 0.518 s/100 | 0.517 s/100 | 0.520 s/100 |
+| INT8 static | 0.233 s/100 | 0.225 s/100 | 0.226 s/100 | 0.225 s/100 |
+| **Speedup** | **2.24x** | **2.30x** | **2.29x** | **2.31x** |
 
-**Accuracy gate:** INT8 must match BF16 baseline — SNP F1 ≥ 0.9974, INDEL F1 ≥ 0.9940 (measured on chr20 GIAB HG003). Validated with rtg vcfeval (hap.py Docker is x86-only; building from source on ARM64 is untested).
+- **INT8 vs BF16 (TF+OneDNN): ~same** (0.225 vs 0.232 s/100, ~3% faster)
+- Batch size has minimal impact — INT8 SMMLA is efficient at all sizes tested
 
-**WARNING:** InceptionV3 is fragile to quantize. Published case showed ImageNet accuracy dropping from 74.6% to 21.0% with bad calibration. DeepVariant's 3-class task may be more robust, but must validate carefully.
+**Full pipeline (chr20, c7g.4xlarge 16 vCPU):**
+
+| Step | INT8 | BF16 |
+|------|------|------|
+| make_examples | 307s | 278s |
+| call_variants | 195s (0.238s/100) | 185s (0.232s/100) |
+| postprocess | 14s | 24s |
+| **Total** | **~516s** | **487s** |
+
+**Accuracy (rtg vcfeval, chr20 GIAB HG003):**
+
+| Metric | INT8 | BF16 | Gate | Status |
+|--------|------|------|------|--------|
+| SNP F1 | **0.9978** | 0.9977 | ≥0.9974 | **PASS** |
+| INDEL F1 | **0.9962** | 0.9961 | ≥0.9940 | **PASS** |
+
+**Key finding:** INT8 via ONNX gives essentially the **same performance as BF16 via TF+OneDNN** on Graviton3. INT8 is 2.3x over ONNX FP32, but since TF+OneDNN FP32 is faster than ONNX FP32, the net effect vs TF BF16 is negligible.
+
+**Required fix:** INT8 quantization error causes some predictions to not sum to 1.0 (e.g., [0.992, 0.0, 0.0]). Fixed by renormalizing ONNX output: `predictions = predictions / predictions.sum(axis=1, keepdims=True)`. Without this fix, `round_gls()` in `call_variants.py` crashes.
+
+**Conclusion:** INT8 is a viable alternative to BF16 for platforms without BF16 support (Neoverse-N1, Ampere Altra). On Graviton3+ where BF16 is available, INT8 offers no additional speedup. The main remaining levers are **more cores** (16→32 vCPU) and **fast_pipeline**.
 
 **Scaling projections (32 vCPU, c7g.8xlarge, $1.15/hr):**
 
 | Config | WGS Time | Cost/Genome | vs Google |
 |--------|----------|-------------|-----------|
 | BF16 sequential | ~3.7 hr | $4.25 | 2.8x slower, 15% cheaper |
-| INT8 (2x/FP32) sequential | ~3.4 hr | $3.91 | 2.6x slower, 22% cheaper |
-| INT8 (2x/BF16) sequential | ~2.9 hr | $3.34 | 2.2x slower, 33% cheaper |
-| INT8 + fast_pipeline | ~2.2-2.6 hr | $2.53-2.99 | 50-40% cheaper |
+| BF16 + fast_pipeline | ~2.8 hr | $3.27 | 2.2x slower, 35% cheaper |
 | Google x86 reference | ~1.3 hr | $5.01 | baseline |
 
 **Blocker:** AWS vCPU limit is 16 — must request increase for 32+ vCPU benchmarks.
@@ -261,7 +283,7 @@ Combined: 1.5 × 2 × 1.3 = ~3.9x potential
 | C++ opts (haplotype cap, flat buffer, query cache) | make_examples -10% | **DONE** | 7m33s total (8-core: 12m57s) |
 | TF warmup (dummy inference pass) | call_variants -4% | **DONE** | 7m22s total (0.512s/100) on GCP 16-vCPU |
 | BF16 on Graviton3+ | **call_variants -38% (1.61x)** | **DONE** | 8m06s total (0.232s/100) on Graviton3 16-vCPU |
-| INT8 quantization (ONNX) | Est. 2x over FP32 | **TODO** | Highest priority — scripts ready |
+| INT8 static quantization (ONNX) | **2.3x over ONNX FP32** | **DONE** | 0.225s/100 — matches BF16, no additional gain on Graviton3 |
 | Scaling to 32+ vCPU | Est. 1.5x wall time | **BLOCKED** | AWS vCPU limit = 16 |
 | fast_pipeline (concurrent ME+CV) | Est. 1.3x wall time | **TODO** | Not tested on Linux ARM64 |
 | KMP_AFFINITY + system allocator | **30% REGRESSION** | **REVERTED** | Do not re-attempt |
@@ -395,6 +417,8 @@ These optimizations were investigated on macOS and found to have zero impact. Th
 | **MobileNetV2 / any depthwise-separable model** | **Dead end** | Same architecture class as EfficientNet — same CPU GEMM density problem |
 | **KMP_AFFINITY tuning** | **30% regression** | `granularity=core,compact,1,0` + `TF_ONEDNN_USE_SYSTEM_ALLOCATOR` cause massive slowdown on ARM64 Neoverse |
 | **ONNX ACL ExecutionProvider** | Not worth it | Community-maintained, 16 operators only, fragile version pinning, no pre-built wheels |
+| **ONNX dynamic INT8 quantization** | **Broken on ARM64** | `ConvInteger(10)` op not implemented in CPUExecutionProvider — use static INT8 (QDQ format) instead |
+| **INT8 on Graviton3+ (vs BF16)** | **No additional gain** | INT8 ONNX static = 0.225s/100, TF+OneDNN BF16 = 0.232s/100 — essentially same speed |
 
 ### What DOES Matter (Profile First)
 
@@ -441,8 +465,8 @@ Apple Silicon's unified memory makes CPU→GPU data transfer free. On Linux ARM6
 - [x] EfficientNet-B3 training pipeline built and model trained — **DEAD END: 3x slower on CPU**
 - [x] KMP_AFFINITY + system allocator — **HARMFUL** (30% regression, reverted)
 - [x] Graviton3+ BF16: **1.61x call_variants speedup**, zero accuracy loss (measured on c7g.4xlarge)
-- [ ] INT8 quantization of InceptionV3 (ONNX dynamic first, then static with calibration)
-- [ ] INT8 accuracy validation (gate: SNP F1 ≥ 0.9974, INDEL F1 ≥ 0.9940)
+- [x] INT8 static quantization: 2.3x over ONNX FP32, matches BF16 speed (0.225 vs 0.232 s/100)
+- [x] INT8 accuracy: SNP F1=0.9978, INDEL F1=0.9962 (matches BF16, passes gate)
 - [ ] Scale to 32+ vCPU (requires AWS vCPU limit increase)
 
 ### v0.3.0 — GPU/NPU Acceleration (Future, Optional)

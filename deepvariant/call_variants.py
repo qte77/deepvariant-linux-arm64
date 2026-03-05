@@ -963,6 +963,11 @@ def call_variants(
     if use_onnx:
       predictions = onnx_session.run(
           None, {onnx_input_name: images_in_batch.numpy()})[0]
+      # INT8 quantized models may produce probabilities that don't sum to
+      # exactly 1.0 due to quantization error. Renormalize to prevent
+      # round_gls from rejecting valid predictions.
+      row_sums = predictions.sum(axis=1, keepdims=True)
+      predictions = predictions / row_sums
     elif use_saved_model:
       if concrete_fn is not None:
         predictions = concrete_fn(images_in_batch)

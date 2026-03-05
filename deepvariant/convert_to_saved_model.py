@@ -66,6 +66,12 @@ _EXAMPLE_INFO_JSON = flags.DEFINE_string(
     ),
 )
 
+_MODEL_TYPE = flags.DEFINE_string(
+    'model_type',
+    'inception_v3',
+    'Model architecture to use. Supported: inception_v3, efficientnet_b3.',
+)
+
 
 def register_required_flags():
   flags.mark_flags_as_required([
@@ -93,8 +99,20 @@ def initialize_model(
   ]
   logging.info('Loading %s', checkpoint_path)
   logging.info('Example shape %s', example_shape)
-  # Load model
-  model = modeling.inceptionv3(example_shape, init_backbone_with_imagenet=False)
+  # Load model using the specified architecture
+  model_type = _MODEL_TYPE.value
+  model_registry = {
+      'inception_v3': modeling.inceptionv3,
+      'efficientnet_b3': modeling.efficientnetb3,
+  }
+  if model_type not in model_registry:
+    raise ValueError(
+        f'Unsupported model type: {model_type}. '
+        f'Supported: {list(model_registry.keys())}'
+    )
+  model = model_registry[model_type](
+      example_shape, init_backbone_with_imagenet=False
+  )
   # model.load_weights(checkpoint_path).expect_partial()
   # checkpoint = tf.train.Checkpoint(model=model)
   # Note that the `print_model_summary` is necessary because we need to run a

@@ -18,6 +18,12 @@ export KMP_BLOCKTIME="${KMP_BLOCKTIME:-0}"
 export TF_NUM_INTEROP_THREADS="${TF_NUM_INTEROP_THREADS:-1}"
 export TF_NUM_INTRAOP_THREADS="${TF_NUM_INTRAOP_THREADS:-$(nproc)}"
 
+# Thread affinity: keep adjacent threads on adjacent cores for L3 cache reuse
+export KMP_AFFINITY="${KMP_AFFINITY:-granularity=core,compact,1,0}"
+
+# Use TF's allocator for oneDNN to reduce memory fragmentation
+export TF_ONEDNN_USE_SYSTEM_ALLOCATOR="${TF_ONEDNN_USE_SYSTEM_ALLOCATOR:-1}"
+
 # BF16 fast math on Graviton3+ (Neoverse V1/V2 with BF16 support)
 if [[ -z "${DNNL_DEFAULT_FPMATH_MODE:-}" ]] && grep -q bf16 /proc/cpuinfo 2>/dev/null; then
   export DNNL_DEFAULT_FPMATH_MODE=BF16

@@ -881,6 +881,11 @@ def call_variants(
     sess_options = ort.SessionOptions()
     sess_options.intra_op_num_threads = multiprocessing.cpu_count()
     sess_options.inter_op_num_threads = 1
+    # Enable BF16 fast math on Graviton3+ (Neoverse V1/V2 with BF16 support).
+    # No effect on hardware without BF16 (e.g. Neoverse-N1).
+    sess_options.add_session_config_entry(
+        'mlas.enable_gemm_fastmath_arm64_bfloat16', '1'
+    )
     onnx_session = ort.InferenceSession(
         onnx_model, sess_options, providers=providers)
     onnx_input_name = onnx_session.get_inputs()[0].name
@@ -900,6 +905,19 @@ def call_variants(
     raise ValueError(
         'Could not infer example shape from examples or model directory.'
     )
+
+  # Trace a concrete function for the SavedModel to trigger Grappler
+  # optimizations (BatchNorm folding, op fusion, persistent kernel reuse).
+  concrete_fn = None
+  if use_saved_model and not use_onnx and model is not None:
+    num_channels = example_shape[-1] if example_shape else None
+    if num_channels:
+      concrete_fn = model.signatures['serving_default'].get_concrete_function(
+          tf.TensorSpec(
+              shape=[None] + list(example_shape), dtype=tf.float32
+          )
+      )
+      logging.info('Traced concrete function for SavedModel inference.')
 
   logging.info('example_shape: %s', example_shape)
   enc_image_variant_alt_allele_ds = get_dataset(
@@ -938,7 +956,10 @@ def call_variants(
       predictions = onnx_session.run(
           None, {onnx_input_name: images_in_batch.numpy()})[0]
     elif use_saved_model:
-      predictions = model.signatures['serving_default'](images_in_batch)
+      if concrete_fn is not None:
+        predictions = concrete_fn(images_in_batch)
+      else:
+        predictions = model.signatures['serving_default'](images_in_batch)
       predictions = predictions['classification'].numpy()
     else:
       if not is_gpu_available:

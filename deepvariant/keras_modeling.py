@@ -129,8 +129,9 @@ def load_weights_to_model_with_different_channels(
       continue
     if len(new_layer.weights) != len(input_model_layer.weights):
       raise ValueError(
-          'We expect input weights and the model we train to both '
-          'be InceptionV3. The top level dict should be the same.'
+          f'Weight count mismatch at layer {layer_i}: '
+          f'input model has {len(input_model_layer.weights)} weights, '
+          f'target model has {len(new_layer.weights)} weights.'
       )
 
     # Create a list of ndarray, which will be used input for `set_weights`
@@ -191,6 +192,37 @@ def num_channels_from_checkpoint(filepath: str) -> int:
           'architecture. Please use a new model.'
       )
   raise ValueError('Unexpected model format.')
+
+
+def efficientnetb3_with_imagenet(
+    input_shape: Tuple[int, int, int],
+) -> tf.keras.Model:
+  """Returns EfficientNetB3 with 3 channels and ImageNet weights."""
+  input_shape = list(input_shape)
+  input_shape = [input_shape[0], input_shape[1], 3]
+
+  backbone = tf.keras.applications.EfficientNetB3(
+      include_top=False,
+      weights='imagenet',
+      input_shape=input_shape,
+      classes=dv_constants.NUM_CLASSES,
+      pooling='avg',
+  )
+
+  weight_decay = _DEFAULT_WEIGHT_DECAY
+  backbone_drop_rate = _DEFAULT_BACKBONE_DROPOUT_RATE
+
+  hid = tf.keras.layers.Dropout(backbone_drop_rate)(backbone.output)
+
+  outputs = []
+  outputs.append(build_classification_head(hid, l2=weight_decay))
+
+  model = tf.keras.Model(
+      inputs=backbone.input, outputs=outputs, name='efficientnetb3'
+  )
+  model = add_l2_regularizers(model, tf.keras.layers.Conv2D, l2=weight_decay)
+
+  return model
 
 
 def inceptionv3_with_imagenet(
@@ -336,6 +368,85 @@ def inceptionv3(
     return model
 
 
+def efficientnetb3(
+    input_shape: Tuple[int, int, int],
+    weights: Optional[str] = None,
+    init_backbone_with_imagenet: bool = True,
+    config: Optional[ml_collections.ConfigDict] = None,
+) -> tf.keras.Model:
+  """Returns an EfficientNetB3 architecture.
+
+  Args:
+    input_shape: a 3-tuple describing the input shape.
+    weights: str. To initial weights from.
+    init_backbone_with_imagenet: If True, initialize with ImageNet weights.
+    config: a model configuration.
+
+  Returns:
+    An EfficientNetB3-based model.
+  """
+  backbone = tf.keras.applications.EfficientNetB3(
+      include_top=False,
+      weights=None,
+      input_shape=input_shape,
+      classes=dv_constants.NUM_CLASSES,
+      pooling='avg',
+  )
+
+  if config:
+    weight_decay = config.weight_decay
+    backbone_dropout_rate = config.backbone_dropout_rate
+  else:
+    weight_decay = _DEFAULT_WEIGHT_DECAY
+    backbone_dropout_rate = _DEFAULT_BACKBONE_DROPOUT_RATE
+
+  hid = tf.keras.layers.Dropout(backbone_dropout_rate)(backbone.output)
+
+  outputs = []
+  outputs.append(build_classification_head(hid, l2=weight_decay))
+
+  model = tf.keras.Model(
+      inputs=backbone.input, outputs=outputs, name='efficientnetb3'
+  )
+
+  model = add_l2_regularizers(model, tf.keras.layers.Conv2D, l2=weight_decay)
+
+  model.summary()
+  logging.info('Number of l2 regularizers: %s.', len(model.losses))
+
+  if not weights and init_backbone_with_imagenet:
+    logging.info(
+        'efficientnetb3: Initiate the model with imagenet (3 channels).'
+    )
+    model = load_weights_to_model_with_different_channels(
+        model, efficientnetb3_with_imagenet(input_shape)
+    )
+    return model
+  elif not weights and not init_backbone_with_imagenet:
+    logging.info('efficientnetb3: No initial checkpoint specified.')
+    return model
+
+  weights_num_channels = num_channels_from_checkpoint(weights)
+  model_num_channels = input_shape[2]
+  if weights_num_channels != model_num_channels:
+    weights_input_shape = list(input_shape)
+    weights_input_shape[2] = weights_num_channels
+    input_model = efficientnetb3(
+        tuple(weights_input_shape), weights, init_backbone_with_imagenet=False
+    )
+    logging.info(
+        'efficientnetb3: Assigning weights from %s channels to %s channels',
+        weights_num_channels,
+        model_num_channels,
+    )
+    model = load_weights_to_model_with_different_channels(model, input_model)
+    return model
+  else:
+    logging.info('efficientnetb3: load_weights from checkpoint: %s', weights)
+    model.load_weights(weights)
+    return model
+
+
 def print_model_summary(
     model: tf.keras.Model, input_shape: Tuple[int, int, int, int]
 ) -> None:
@@ -424,13 +535,21 @@ def create_state(
     return ckpt_manager
 
 
+_MODEL_REGISTRY = {
+    'inception_v3': inceptionv3,
+    'efficientnet_b3': efficientnetb3,
+}
+
+
 def get_model(
     config: ml_collections.ConfigDict,
 ) -> Union[tf.keras.Model, Callable[..., tf.keras.Model]]:
-  if config.model_type == 'inception_v3':
-    return inceptionv3
-  else:
-    raise ValueError('Unsupported model type.')
+  if config.model_type in _MODEL_REGISTRY:
+    return _MODEL_REGISTRY[config.model_type]
+  raise ValueError(
+      f'Unsupported model type: {config.model_type}. '
+      f'Supported: {list(_MODEL_REGISTRY.keys())}'
+  )
 
 
 def get_activations_model(

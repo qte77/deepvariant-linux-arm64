@@ -36,26 +36,29 @@ This project ports DeepVariant to Linux ARM64 with hardware-accelerated inferenc
 
 The `call_variants` step runs Inception V3 (23.9M params) CNN inference on 100×221×7 uint8 pileup images — standard image classification with no custom ops. This is the bottleneck without GPU (83% of CPU-only wall time).
 
-### Backend Comparison
+### Backend Comparison (Updated with Benchmark Results)
 
-| Backend | Target Hardware | Maturity | Expected Speedup | Effort |
-|---------|----------------|----------|-----------------|--------|
-| **ONNX Runtime + ACL** | All ARM64 CPUs (Graviton, Ampere, Cortex-A76+) | Production | 1.5-2.5x over stock TF[6] | Medium |
-| **TF OneDNN+ACL** | Graviton (Neoverse) specifically | Production | 1.3-2x (with BF16 on Graviton3+)[7] | Low |
-| **Apache TVM + OpenCL** | Mali G610/G710 GPUs | Alpha for Mali Valhall | 2-4x (theoretical) but poor real results on G610[8][9] | High |
-| **TFLite + GPU Delegate** | Mali GPUs via OpenCL | Production on NXP i.MX[10] | 1.5-3x | Medium |
-| **ExecuTorch + TOSA/VGF** | Future Arm neural GPUs (2026+)[11][12] | Beta (GA Oct 2025) | TBD | High (future) |
+| Backend | Target Hardware | Maturity | Measured/Expected Speedup | Effort |
+|---------|----------------|----------|--------------------------|--------|
+| **TF OneDNN+ACL** | All ARM64 CPUs | Production | **Baseline winner** on Neoverse-N1[7] | Low |
+| **ONNX Runtime (CPUExecutionProvider)** | All ARM64 CPUs | Production | **24% slower** than TF+OneDNN (measured)[6] | Done |
+| **ONNX Runtime (MLAS BF16)** | Graviton3+ (Neoverse V1/V2 only) | Production | 35-65% over ONNX CPU (config flag only) | Config |
+| **ONNX Runtime (ACL EP, source build)** | All ARM64 CPUs | Community-maintained | Unknown; fragile build, 16 ops only | High |
+| **EfficientNet-B3 (model swap)** | Any backend | Validated (ISPRAS paper) | 1.5-2x from 3.2x fewer FLOPs[14] | Medium |
+| **Apache TVM + OpenCL** | Mali G610/G710 GPUs | Alpha for Mali Valhall | Poor real results on G610[8][9] | High |
 | **CUDA (Jetson)** | Jetson Orin only | Production | 3-5x | Low (TF native) |
 
-### Recommended Strategy: Tiered Approach
+### Recommended Strategy: Revised Tiered Approach
 
-**Phase 1 (CPU-only, fastest path):** TF aarch64 wheel + OneDNN+ACL optimizations. Gets DeepVariant running on Graviton/Ampere immediately with no model conversion. This alone unlocks the 20-40% cloud cost savings.
+**Phase 1 (CPU-only, COMPLETE):** TF aarch64 wheel + OneDNN+ACL + C++ optimizations (haplotype cap, ImageRow flat buffer, query cache). Benchmarked at 12m57s on chr20:1-30M (GCP t2a-standard-8).
 
-**Phase 2 (ONNX inference):** Convert SavedModel → ONNX → ONNX Runtime with ACL execution provider. This gives 28-51% additional inference speedup on Neoverse and is the most production-ready ARM acceleration path.[6][13]
+**Phase 2 (TF tuning + model modernization):** Two parallel workstreams:
+- **2A: TF OneDNN tuning** — `get_concrete_function()` for Grappler BatchNorm folding, `KMP_AFFINITY`, `TF_ONEDNN_USE_SYSTEM_ALLOCATOR`. Low effort, 10-25% call_variants gain.
+- **2B: EfficientNet-B3** — Replace InceptionV3 (5.7 GFLOPs) with EfficientNet-B3 (1.8 GFLOPs). Highest-impact single change: 1.5-2x inference speedup that compounds with backend optimizations. ISPRAS paper validates +0.51% F1.[14] ~150 lines across 4 files + GPU training (~2h, ~$4).
 
-**Phase 3 (Model modernization):** Replace Inception V3 with EfficientNet-B3 — 48% fewer parameters, +0.51% F1 improvement, faster convergence. This is the highest-impact change for resource-constrained hardware because fewer MACs compounds with every other optimization.[14]
+**Phase 2 ONNX status:** The `--use_onnx` flag is implemented and works. On Neoverse-N1 (no BF16), ONNX CPUExecutionProvider is slower than TF+OneDNN. On Graviton3+ (BF16), enabling `mlas.enable_gemm_fastmath_arm64_bfloat16` may reverse this — needs benchmarking on actual Graviton hardware.
 
-**Phase 4 (GPU/NPU, optional):** TFLite + OpenCL for Mali, CUDA for Jetson. Only pursue after Phase 1-3 are validated.
+**Phase 3 (GPU/NPU, optional):** TFLite + OpenCL for Mali, CUDA for Jetson. Only pursue after Phase 2 is validated.
 
 ***
 
@@ -146,63 +149,77 @@ All six optimizations from the macOS port are platform-independent and transfer 
 
 ***
 
-## Phase 2: ONNX Runtime Acceleration
+## Phase 2: Inference Acceleration (Revised)
 
-### Goal
-Replace TensorFlow inference in `call_variants` with ONNX Runtime + ARM Compute Library (ACL) execution provider for 1.5-2.5x speedup on all ARM64 CPUs.
+### Status
 
-### 2.1 Model Conversion Pipeline
+ONNX integration is **complete** (`--use_onnx` flag, model conversion, Docker images). Benchmarking revealed TF+OneDNN outperforms ONNX CPUExecutionProvider on Neoverse-N1. Strategy revised to focus on TF tuning + EfficientNet-B3.
 
-```
-TF SavedModel → ONNX (via tf2onnx) → ONNX Runtime (with ACL EP)
-```
+### 2.0 Benchmark Results (chr20:1-30M, ~46K examples, GCP t2a-standard-8)
 
-**Steps:**
+| Config | make_examples | call_variants (rate) | Total |
+|--------|-------------|---------------------|-------|
+| Original baseline (TF) | 6m12s | 6m58s (0.88s/100) | 13m33s |
+| + C++ optimizations | 5m35s | 7m04s (0.88s/100) | **12m57s** |
+| + C++ opts + ONNX | 5m37s | 8m29s (1.09s/100) | 14m23s |
 
-- [ ] Convert DeepVariant WGS SavedModel to ONNX format
-  ```bash
-  python -m tf2onnx.convert --saved-model /opt/models/wgs \
-    --output deepvariant_wgs.onnx --opset 17
-  ```
-- [ ] Validate ONNX model produces identical logits (max abs diff < 1e-5 vs TF)
-- [ ] Test ONNX Runtime with ACL execution provider:[13]
-  ```python
-  import onnxruntime as ort
-  sess = ort.InferenceSession("deepvariant_wgs.onnx",
-      providers=["ACLExecutionProvider", "CPUExecutionProvider"])
-  ```
-- [ ] Benchmark inference latency vs stock TF on Graviton3/4
-- [ ] Apply INT8 quantization (post-training) and validate accuracy is preserved[15]
+**Key finding:** ONNX CPUExecutionProvider is 24% slower than TF+OneDNN at steady-state inference. The "28-51% speedup" cited in literature refers to MLAS BF16 kernels on Graviton3+ (Neoverse V1), not the ACL ExecutionProvider. The ACL EP is community-maintained (16 operators, fragile builds, no pre-built wheels) and not worth pursuing.
 
-### 2.2 Integration into call_variants.py
+### 2.1 ONNX Integration (COMPLETE)
 
-Modify `call_variants.py` to support an `--use_onnx` flag (analogous to the macOS port's `--use_coreml`):
+- [x] `--use_onnx` and `--onnx_model` flags in `call_variants.py`
+- [x] ONNX session loading with lazy import, provider fallback
+- [x] Skip TF model loading when `--use_onnx` (reads shape from example_info.json)
+- [x] Model conversion via tf2onnx in Docker image
+- [x] `--call_variants_extra_args` passthrough working
 
+### 2.2 TF OneDNN Tuning (TODO)
+
+**`call_variants.py`** — Add `get_concrete_function()` after SavedModel load:
 ```python
-# New flag
-flags.DEFINE_boolean('use_onnx', False, 'Use ONNX Runtime for inference')
-flags.DEFINE_string('onnx_model', None, 'Path to ONNX model file')
+if use_saved_model and not use_onnx:
+    concrete_fn = model.signatures['serving_default'].get_concrete_function(
+        tf.TensorSpec(shape=[None, 100, 221, num_channels], dtype=tf.float32)
+    )
+```
+This triggers Grappler BatchNorm folding and persistent kernel reuse (5-15% speedup).
 
-# In inference loop, branch based on backend
-if FLAGS.use_onnx:
-    import onnxruntime as ort
-    sess = ort.InferenceSession(FLAGS.onnx_model,
-        providers=["ACLExecutionProvider", "CPUExecutionProvider"])
-    outputs = sess.run(None, {"input": batch_images})
-else:
-    # existing TF inference path
+**`docker_entrypoint.sh`** — Add missing environment variables:
+```bash
+export KMP_AFFINITY="${KMP_AFFINITY:-granularity=core,compact,1,0}"
+export TF_ONEDNN_USE_SYSTEM_ALLOCATOR=1
 ```
 
-### 2.3 Expected Performance
+**ONNX BF16 on Graviton3+** — Add to ONNX session setup:
+```python
+sess_options.add_session_config_entry(
+    "mlas.enable_gemm_fastmath_arm64_bfloat16", "1"
+)
+```
 
-Based on ONNX Runtime ARM benchmarks, expect 28-51% inference speedup over stock TensorFlow on Neoverse. Combined with OneDNN+ACL for the TF parts and the fast pipeline for concurrency, estimated total pipeline speedup:[6]
+**Diagnostic:** Run `DNNL_VERBOSE=1` once to confirm ACL kernels are active in oneDNN.
 
-| Configuration | Estimated call_variants Time (chr20, 16-core) | vs x86 CPU |
-|--------------|----------------------------------------------|------------|
-| TF CPU-only baseline (ARM64) | ~18 min | ~1.1x slower (fewer IPC) |
-| TF + OneDNN+ACL + BF16 | ~12 min | ~comparable |
-| ONNX Runtime + ACL | ~8 min | ~1.5x faster |
-| ONNX + fast pipeline + all C++ opts | ~5 min (estimated) | ~3x faster |
+### 2.3 EfficientNet-B3 Model (TODO)
+
+Replace InceptionV3 (23.9M params, 5.7 GFLOPs) with EfficientNet-B3 (12.3M params, 1.8 GFLOPs).
+
+**Code changes (~150 lines across 4 files):**
+- `keras_modeling.py` — Add `efficientnetb3()` function using `tf.keras.applications.EfficientNetB3`, update `get_model()` dispatcher
+- `train.py` (line 216) — Use `get_model(config)(...)` instead of hardcoded `inceptionv3(...)`
+- `convert_to_saved_model.py` (line 97) — Same dispatch change
+- `dv_config.py` — Add `config.model_type = 'efficientnet_b3'` support
+
+**Training:** ~2h on single A10G (~$4), GIAB HG001 data, SGD+momentum, 10 epochs
+**Reference:** [ISPRAS fork](https://github.com/ispras/deepvariant_alternative_models), Gurianova et al. 2026 IJMS 27:513
+
+### 2.4 Expected Cumulative Performance
+
+| Optimization | Impact | Cumulative (chr20:1-30M, 8-core) |
+|-------------|--------|----------------------------------|
+| C++ opts (done) | make_examples -10% | 12m57s |
+| TF tuning (concrete_fn + env vars) | call_variants -10-25% | ~11m-12m |
+| EfficientNet-B3 (3.2x fewer FLOPs) | call_variants -40-50% | ~8-9m |
+| On Graviton3+ with BF16 | additional -30-50% on inference | ~6-7m |
 
 ***
 
@@ -379,27 +396,22 @@ Apple Silicon's unified memory makes CPU→GPU data transfer free. On Linux ARM6
 
 ## Release Milestones
 
-### v0.1.0 — CPU-Only ARM64 Build (Target: 4-6 weeks)
-- [ ] DeepVariant builds and runs on Graviton3 (CPU-only)
-- [ ] All C++ optimizations ported (haplotype cap, flat buffer, query cache)
-- [ ] Fast pipeline working on Linux ARM64
-- [ ] Accuracy validated against x86 reference (VCF bit-identical on PASS variants)
-- [ ] Docker image published to GitHub Container Registry
-- [ ] Benchmark: full HG003 chr20, comparison with x86 Docker
+### v0.1.0 — CPU-Only ARM64 Build (COMPLETE)
+- [x] DeepVariant builds and runs on ARM64 (Hetzner CAX31 + GCP t2a-standard-8)
+- [x] All C++ optimizations ported (haplotype cap, flat buffer, query cache)
+- [x] Pipeline validated — 103,516 variants on chr20:1-30M
+- [x] Docker images on ghcr.io (`deepvariant-arm64:latest`, `deepvariant-arm64:optimized`)
+- [x] Benchmark: chr20:1-30M in 12m57s on 8-core Ampere (optimized TF)
+- [x] ONNX inference path implemented (`--use_onnx` flag)
 
-### v0.2.0 — ONNX Inference (Target: 8-10 weeks)
-- [ ] ONNX model conversion validated
-- [ ] ONNX Runtime + ACL integrated into call_variants
-- [ ] INT8 quantized model tested
-- [ ] Benchmark shows ≥1.5x inference speedup over stock TF
+### v0.2.0 — Inference Acceleration (In Progress)
+- [x] ONNX model conversion and integration (complete, but slower than TF+OneDNN on N1)
+- [ ] TF OneDNN tuning (concrete_fn, KMP_AFFINITY, system allocator)
+- [ ] EfficientNet-B3 model trained and validated
+- [ ] Benchmark shows ≥1.5x call_variants speedup over v0.1.0 baseline
+- [ ] Graviton3+ benchmark with BF16 (ONNX MLAS or TF OneDNN)
 
-### v0.3.0 — EfficientNet-B3 Model (Target: 14-18 weeks)
-- [ ] EfficientNet-B3 trained on GIAB data
-- [ ] Accuracy meets or exceeds Inception V3 baseline
-- [ ] ONNX + INT8 quantized version available
-- [ ] Full pipeline benchmark on Graviton4 and Ampere A1
-
-### v0.4.0 — GPU/NPU Acceleration (Target: 20-24 weeks)
+### v0.3.0 — GPU/NPU Acceleration (Future, Optional)
 - [ ] Jetson Orin CUDA path working
 - [ ] (Optional) TFLite + OpenCL for Mali
 - [ ] (Optional) RKNN integration for RK3588 NPU
@@ -510,6 +522,6 @@ deepvariant-linux-arm64/
 
 4. **`int64_t` type handling.** On Linux ARM64, `int64_t` = `long` (same as x86_64 Linux). The macOS port fixed `int64_t` = `long long` mismatches. These patches may not be needed on Linux ARM64 but should be verified — use `static_cast<int64_t>()` universally for safety.
 
-5. **ONNX over TFLite for the primary acceleration path.** ONNX Runtime + ACL is more mature for server-class ARM64 CPUs than TFLite. TFLite is better for embedded (RK3588) where the GPU Delegate matters.[13][10][6]
+5. **TF+OneDNN is the primary inference backend.** Benchmarking showed ONNX Runtime CPUExecutionProvider is 24% slower than TF+OneDNN on Neoverse-N1. The ONNX ACL ExecutionProvider is community-maintained (16 operators, fragile builds) and not worth pursuing. ONNX may outperform TF on Graviton3+ via MLAS BF16 kernels — needs testing. The `--use_onnx` flag is implemented as an opt-in alternative.
 
 6. **BF16 fast math on Graviton3+.** Graviton3 and newer support BF16 operations. Enable via `DNNL_DEFAULT_FPMATH_MODE=BF16`. Validate that variant calling accuracy is unaffected (BF16 has 8 mantissa bits vs FP32's 23 — sufficient for Inception V3/EfficientNet classification but must be verified).[7]

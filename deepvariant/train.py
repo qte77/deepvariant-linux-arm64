@@ -213,7 +213,8 @@ def train(config: ml_collections.ConfigDict):
 
   with strategy.scope():
 
-    model = keras_modeling.inceptionv3(
+    model_fn = keras_modeling.get_model(config)
+    model = model_fn(
         input_shape=input_shape,
         weights=config.init_checkpoint,
         init_backbone_with_imagenet=config.init_backbone_with_imagenet,

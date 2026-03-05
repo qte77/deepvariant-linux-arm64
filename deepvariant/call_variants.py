@@ -906,18 +906,15 @@ def call_variants(
         'Could not infer example shape from examples or model directory.'
     )
 
-  # Trace a concrete function for the SavedModel to trigger Grappler
-  # optimizations (BatchNorm folding, op fusion, persistent kernel reuse).
+  # Warm up the SavedModel with a dummy batch to trigger Grappler
+  # optimizations (BatchNorm folding, op fusion, kernel caching).
   concrete_fn = None
   if use_saved_model and not use_onnx and model is not None:
-    num_channels = example_shape[-1] if example_shape else None
-    if num_channels:
-      concrete_fn = model.signatures['serving_default'].get_concrete_function(
-          tf.TensorSpec(
-              shape=[None] + list(example_shape), dtype=tf.float32
-          )
-      )
-      logging.info('Traced concrete function for SavedModel inference.')
+    infer_fn = model.signatures['serving_default']
+    warmup_input = tf.zeros([1] + list(example_shape), dtype=tf.float32)
+    _ = infer_fn(warmup_input)
+    concrete_fn = infer_fn
+    logging.info('Warmed up SavedModel inference function.')
 
   logging.info('example_shape: %s', example_shape)
   enc_image_variant_alt_allele_ds = get_dataset(

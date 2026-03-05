@@ -857,25 +857,22 @@ def call_variants(
       if channel_enum not in example_info.get('ablation_channels', []):
         channel_indices.append(idx)
 
-  example_shape, model = load_model_and_check_shape(
-      checkpoint_path,
-      examples_filename,
-      first_example,
-      use_saved_model,
-      _STREAM_EXAMPLES.value,
-  )
-
-  if not example_shape:
-    raise ValueError(
-        'Could not infer example shape from examples or model directory.'
-    )
-
   # ONNX Runtime session setup (ARM64 acceleration)
   onnx_session = None
   onnx_input_name = None
+  model = None
   if use_onnx:
     if not onnx_model:
       raise ValueError('--onnx_model is required when --use_onnx is True.')
+    # Get example shape without loading the TF model.
+    example_info_json = dv_utils.get_example_info_json_filename(
+        examples_filename, 0
+    )
+    example_shape, _, _ = dv_utils.get_shape_and_channels_from_json(
+        example_info_json
+    )
+    if example_shape is None:
+      example_shape = dv_utils.example_image_shape(first_example)
     import onnxruntime as ort
     providers = ['ACLExecutionProvider', 'CPUExecutionProvider']
     available = ort.get_available_providers()
@@ -890,6 +887,19 @@ def call_variants(
     logging.info('ONNX model loaded: %s (input: %s, shape: %s)',
                  onnx_model, onnx_input_name,
                  onnx_session.get_inputs()[0].shape)
+  else:
+    example_shape, model = load_model_and_check_shape(
+        checkpoint_path,
+        examples_filename,
+        first_example,
+        use_saved_model,
+        _STREAM_EXAMPLES.value,
+    )
+
+  if not example_shape:
+    raise ValueError(
+        'Could not infer example shape from examples or model directory.'
+    )
 
   logging.info('example_shape: %s', example_shape)
   enc_image_variant_alt_allele_ds = get_dataset(

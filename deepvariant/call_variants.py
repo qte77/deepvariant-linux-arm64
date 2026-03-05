@@ -874,6 +874,11 @@ def call_variants(
     if example_shape is None:
       example_shape = dv_utils.example_image_shape(first_example)
     import onnxruntime as ort
+    if tuple(int(x) for x in ort.__version__.split('.')[:2]) < (1, 17):
+      logging.warning(
+          'ONNX Runtime %s may lack ARM64 INT8 MLAS kernels (need >= 1.17). '
+          'INT8 models may fall back to slow scalar reference implementation.',
+          ort.__version__)
     providers = ['ACLExecutionProvider', 'CPUExecutionProvider']
     available = ort.get_available_providers()
     providers = [p for p in providers if p in available]
@@ -892,6 +897,12 @@ def call_variants(
     logging.info('ONNX model loaded: %s (input: %s, shape: %s)',
                  onnx_model, onnx_input_name,
                  onnx_session.get_inputs()[0].shape)
+    # Warm up ONNX Runtime with a dummy forward pass to trigger JIT kernel
+    # compilation and memory planning. Without this, the first real batch
+    # includes one-time setup overhead that contaminates benchmarks.
+    warmup_input = np.zeros([1] + list(example_shape), dtype=np.float32)
+    _ = onnx_session.run(None, {onnx_input_name: warmup_input})
+    logging.info('Warmed up ONNX Runtime inference session.')
   else:
     example_shape, model = load_model_and_check_shape(
         checkpoint_path,

@@ -41,20 +41,30 @@ The `call_variants` step runs Inception V3 (23.9M params) CNN inference on 100×
 | Backend | Target Hardware | Maturity | Measured/Expected Speedup | Effort |
 |---------|----------------|----------|--------------------------|--------|
 | **TF OneDNN+ACL** | All ARM64 CPUs | Production | **Baseline winner** on Neoverse-N1[7] | Low |
+| **TF OneDNN+ACL + BF16 fast math** | Graviton3+ (Neoverse V1/V2) | Production | Est. 20-40% over FP32 (ResNet-50 proxy)[7] | Config |
+| **INT8 quantization (ONNX dynamic)** | All ARM64 CPUs (ORT >= 1.17) | Production | Est. 1.5-2x over FP32 | Medium |
+| **INT8 quantization (ONNX static)** | All ARM64 CPUs (ORT >= 1.17) | Production | Est. 2-4x over FP32 (fragile, needs validation) | Medium |
 | **ONNX Runtime (CPUExecutionProvider)** | All ARM64 CPUs | Production | **24% slower** than TF+OneDNN (measured)[6] | Done |
-| **ONNX Runtime (MLAS BF16)** | Graviton3+ (Neoverse V1/V2 only) | Production | 35-65% over ONNX CPU (config flag only) | Config |
-| **ONNX Runtime (ACL EP, source build)** | All ARM64 CPUs | Community-maintained | Unknown; fragile build, 16 ops only | High |
+| **ONNX Runtime (MLAS BF16)** | Graviton3+ only | Production | 35-65% over ONNX CPU (NLP workloads; CNN gains lower) | Config |
 | **EfficientNet-B3 (model swap)** | Any backend | **DEAD END** | **3x slower** on CPU (measured) — depthwise convs have poor GEMM density | Done |
+| **MobileNetV2 / any depthwise-separable model** | Any backend | **DEAD END** | Same architecture class as EfficientNet — same CPU slowdown | N/A |
+| **HELLO (1D CNN pipeline)** | Any backend | Research | Different pipeline entirely — not a model swap | Very High |
 | **Apache TVM + OpenCL** | Mali G610/G710 GPUs | Alpha for Mali Valhall | Poor real results on G610[8][9] | High |
 | **CUDA (Jetson)** | Jetson Orin only | Production | 3-5x | Low (TF native) |
+
+**Key insight:** FLOPs do not predict CPU inference speed. Kernel efficiency and memory access patterns dominate. Dense Conv2D operations (InceptionV3, ResNet) map to single large GEMM calls with high arithmetic intensity. Depthwise separable convolutions (EfficientNet, MobileNet) produce many small kernel launches with poor data reuse. This is a general principle — not specific to any one model.
+
+**BF16 vs INT8:** These are mutually exclusive for quantized layers. BF16 accelerates FP32 GEMM via BFMMLA; INT8 replaces those same GEMMs with SMMLA. Only mixed-precision (some layers FP32/BF16, others INT8) combines both.
 
 ### Recommended Strategy: Revised Tiered Approach
 
 **Phase 1 (CPU-only, COMPLETE):** TF aarch64 wheel + OneDNN+ACL + C++ optimizations (haplotype cap, ImageRow flat buffer, query cache). Benchmarked at 12m57s on chr20:1-30M (GCP t2a-standard-8).
 
-**Phase 2 (TF tuning):**
-- **2A: TF OneDNN tuning** — `get_concrete_function()` for Grappler BatchNorm folding, `KMP_AFFINITY`, `TF_ONEDNN_USE_SYSTEM_ALLOCATOR`. Low effort, 10-25% call_variants gain.
-- **~~2B: EfficientNet-B3~~** — **DEAD END.** Benchmarked at 0.31x speed of InceptionV3 on CPU (3x slower despite 3.2x fewer FLOPs). Depthwise separable convolutions and SE blocks have poor computational density on CPUs compared to InceptionV3's dense GEMM-friendly convolutions. See `TRAINING_EXPERIMENT.md` for full details.
+**Phase 2 (Inference acceleration — revised after literature review + experiments):**
+- **2A: TF OneDNN warmup (DONE)** — SavedModel warmup gives ~4% call_variants improvement. KMP_AFFINITY and TF_ONEDNN_USE_SYSTEM_ALLOCATOR are **HARMFUL** (30% regression, reverted).
+- **2B: BF16 on Graviton3+ (TODO)** — `DNNL_DEFAULT_FPMATH_MODE=BF16` already configured. Expected 20-40% CNN speedup. Needs Graviton3 hardware (AWS c7g) to benchmark.
+- **2C: INT8 quantization of InceptionV3 (TODO)** — Dynamic (1.5-2x) or static (2-4x) quantization via ONNX Runtime. InceptionV3 is fragile to quantize; must validate on HG002 with stratified regions.
+- **~~2D: EfficientNet-B3~~** — **DEAD END.** 3x slower on CPU. Depthwise separable convolutions have poor GEMM density. This generalizes to ALL "efficient" CNN architectures (MobileNetV2, MnasNet, etc.). See `TRAINING_EXPERIMENT.md`.
 
 **Phase 2 ONNX status:** The `--use_onnx` flag is implemented and works. On Neoverse-N1 (no BF16), ONNX CPUExecutionProvider is slower than TF+OneDNN. On Graviton3+ (BF16), enabling `mlas.enable_gemm_fastmath_arm64_bfloat16` may reverse this — needs benchmarking on actual Graviton hardware.
 
@@ -153,7 +163,7 @@ All six optimizations from the macOS port are platform-independent and transfer 
 
 ### Status
 
-ONNX integration is **complete** (`--use_onnx` flag, model conversion, Docker images). Benchmarking revealed TF+OneDNN outperforms ONNX CPUExecutionProvider on Neoverse-N1. Strategy revised to focus on TF tuning + EfficientNet-B3.
+ONNX integration is **complete** (`--use_onnx` flag, model conversion, Docker images). Benchmarking revealed TF+OneDNN outperforms ONNX CPUExecutionProvider on Neoverse-N1. EfficientNet-B3 model swap is **dead** (3x slower on CPU). Strategy revised to focus on BF16 fast math (Graviton3+) and INT8 quantization of InceptionV3.
 
 ### 2.0 Benchmark Results (chr20:1-30M, ~46K examples, GCP t2a-standard-8)
 
@@ -173,31 +183,33 @@ ONNX integration is **complete** (`--use_onnx` flag, model conversion, Docker im
 - [x] Model conversion via tf2onnx in Docker image
 - [x] `--call_variants_extra_args` passthrough working
 
-### 2.2 TF OneDNN Tuning (TODO)
+### 2.2 TF OneDNN Tuning (PARTIAL — Warmup Only)
 
-**`call_variants.py`** — Add `get_concrete_function()` after SavedModel load:
-```python
-if use_saved_model and not use_onnx:
-    concrete_fn = model.signatures['serving_default'].get_concrete_function(
-        tf.TensorSpec(shape=[None, 100, 221, num_channels], dtype=tf.float32)
-    )
-```
-This triggers Grappler BatchNorm folding and persistent kernel reuse (5-15% speedup).
+**SavedModel warmup (DONE, ~4% gain):** Running a dummy inference pass before the main loop triggers Grappler BatchNorm folding, persistent kernel caching, and memory layout optimization. Benchmarked at 0.512s/100 vs 0.532s/100 baseline (3.8% improvement on 16-vCPU). Already committed.
 
-**`docker_entrypoint.sh`** — Add missing environment variables:
-```bash
-export KMP_AFFINITY="${KMP_AFFINITY:-granularity=core,compact,1,0}"
-export TF_ONEDNN_USE_SYSTEM_ALLOCATOR=1
-```
+**KMP_AFFINITY and TF_ONEDNN_USE_SYSTEM_ALLOCATOR — PROVEN HARMFUL:**
+Benchmarked `KMP_AFFINITY=granularity=core,compact,1,0` + `TF_ONEDNN_USE_SYSTEM_ALLOCATOR=1` on t2a-standard-16: **30% regression** (0.692s/100 vs 0.532s/100). Reverted in commit `cb0c37a3`. Do not re-attempt.
 
-**ONNX BF16 on Graviton3+** — Add to ONNX session setup:
-```python
-sess_options.add_session_config_entry(
-    "mlas.enable_gemm_fastmath_arm64_bfloat16", "1"
-)
-```
+**ONNX BF16 on Graviton3+ (already configured):** `mlas.enable_gemm_fastmath_arm64_bfloat16` is set in `call_variants.py` ONNX session setup. Only fires on hardware with BF16 (Graviton3+/Neoverse V1). Needs benchmarking on actual Graviton3 hardware (AWS c7g).
 
-**Diagnostic:** Run `DNNL_VERBOSE=1` once to confirm ACL kernels are active in oneDNN.
+**Diagnostic:** Run `DNNL_VERBOSE=1` to confirm ACL kernels are active in oneDNN. If output shows `ref` or `cpp` instead of `acl` primitives, BF16 env var is being silently ignored.
+
+### 2.2b BF16 Fast Math on Graviton3+ (TODO)
+
+Already configured in `docker_entrypoint.sh` (`DNNL_DEFAULT_FPMATH_MODE=BF16` when `/proc/cpuinfo` shows `bf16`). Expected 20-40% call_variants speedup based on ResNet-50 proxy data from Arm developer blog. Zero accuracy risk — BF16 for multiplications, FP32 for accumulations.
+
+**Blocker:** Need Graviton3+ hardware. Current test machines (Hetzner CAX31, GCP t2a) are Neoverse-N1 (no BF16). Requires AWS c7g (Graviton3) or c8g (Graviton4).
+
+**Note:** BF16 and INT8 are mutually exclusive for quantized layers. BF16 accelerates FP32 GEMM via BFMMLA; INT8 replaces those same GEMMs with INT8 SMMLA. Only mixed-precision combines both.
+
+### 2.2c INT8 Quantization of InceptionV3 (TODO)
+
+**Approach:** ONNX dynamic quantization first (weights only, safest), then static quantization with calibration if insufficient.
+
+- Dynamic INT8: Expected ~1.5-2x speedup. Requires ORT >= 1.17 for ARM64 MLAS kernels.
+- Static INT8: Expected 2-4x speedup. Requires calibration dataset (500 pileup images from TFRecords). Use Percentile calibration (99.99), NOT MinMax (InceptionV3 has long-tailed activations from concatenated Inception modules).
+
+**WARNING:** InceptionV3 is fragile to quantize. Published case showed ImageNet accuracy dropping from 74.6% to 21.0% with bad calibration. DeepVariant's 3-class task may be more robust, but must validate carefully on HG002 with GIAB stratified BED files (low-complexity, satellites, tandem repeats, homopolymers, segdups).
 
 ### 2.3 EfficientNet-B3 Model (DEAD END)
 
@@ -212,12 +224,16 @@ sess_options.add_session_config_entry(
 
 ### 2.4 Expected Cumulative Performance
 
-| Optimization | Impact | Cumulative (chr20:1-30M, 8-core) |
-|-------------|--------|----------------------------------|
-| C++ opts (done) | make_examples -10% | 12m57s |
-| TF tuning (concrete_fn + env vars) | call_variants -10-25% | ~11m-12m |
-| ~~EfficientNet-B3~~ | ~~call_variants -40-50%~~ | **DEAD END: 3x slower** |
-| On Graviton3+ with BF16 | additional -30-50% on inference | ~9-10m |
+| Optimization | Impact | Status | Best Measured (16-vCPU) |
+|-------------|--------|--------|------------------------|
+| C++ opts (haplotype cap, flat buffer, query cache) | make_examples -10% | **DONE** | 7m33s total (8-core: 12m57s) |
+| TF warmup (dummy inference pass) | call_variants -4% | **DONE** | 7m22s total (0.512s/100) |
+| KMP_AFFINITY + system allocator | **30% REGRESSION** | **REVERTED** | Do not re-attempt |
+| BF16 on Graviton3+ | Est. -20-40% call_variants | TODO | Needs AWS c7g |
+| INT8 dynamic quantization (ONNX) | Est. 1.5-2x call_variants | TODO | Needs validation |
+| INT8 static quantization (ONNX) | Est. 2-4x call_variants | TODO | Fragile, needs HG002 validation |
+| ~~EfficientNet-B3~~ | **3x SLOWER** | **DEAD END** | Depthwise separable conv penalty |
+| ~~MobileNetV2~~ | **Same architecture class** | **DEAD END** | Same depthwise conv penalty |
 
 ***
 
@@ -343,6 +359,9 @@ These optimizations were investigated on macOS and found to have zero impact. Th
 | Mixed precision inference | 0% | Only useful if backend handles it automatically |
 | ConvertToPb vectorization | 0% | Only 0.12% of CPU time |
 | **EfficientNet-B3 model swap** | **3x slower** | Depthwise separable convs + SE blocks have poor CPU GEMM density; FLOPs ≠ speed |
+| **MobileNetV2 / any depthwise-separable model** | **Dead end** | Same architecture class as EfficientNet — same CPU GEMM density problem |
+| **KMP_AFFINITY tuning** | **30% regression** | `granularity=core,compact,1,0` + `TF_ONEDNN_USE_SYSTEM_ALLOCATOR` cause massive slowdown on ARM64 Neoverse |
+| **ONNX ACL ExecutionProvider** | Not worth it | Community-maintained, 16 operators only, fragile version pinning, no pre-built wheels |
 
 ### What DOES Matter (Profile First)
 
@@ -385,10 +404,12 @@ Apple Silicon's unified memory makes CPU→GPU data transfer free. On Linux ARM6
 
 ### v0.2.0 — Inference Acceleration (In Progress)
 - [x] ONNX model conversion and integration (complete, but slower than TF+OneDNN on N1)
+- [x] TF OneDNN warmup (~4% call_variants improvement)
 - [x] EfficientNet-B3 training pipeline built and model trained — **DEAD END: 3x slower on CPU**
-- [ ] TF OneDNN tuning (concrete_fn, KMP_AFFINITY, system allocator)
-- [ ] Graviton3+ benchmark with BF16 (ONNX MLAS or TF OneDNN)
-- [ ] INT8 quantization of InceptionV3
+- [x] KMP_AFFINITY + system allocator — **HARMFUL** (30% regression, reverted)
+- [ ] Graviton3+ benchmark with BF16 (AWS c7g, DNNL_VERBOSE to verify ACL active)
+- [ ] INT8 quantization of InceptionV3 (ONNX dynamic first, then static with calibration)
+- [ ] INT8 accuracy validation on HG002 with GIAB stratified BED files
 
 ### v0.3.0 — GPU/NPU Acceleration (Future, Optional)
 - [ ] Jetson Orin CUDA path working

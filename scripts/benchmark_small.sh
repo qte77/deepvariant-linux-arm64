@@ -7,10 +7,11 @@ set -euo pipefail
 # Usage:
 #   bash scripts/benchmark_small.sh [--onnx] [--docker-image IMAGE]
 #
-# Results from Hetzner CAX31 (8 vCPU Neoverse-N1, 16GB RAM):
-#   make_examples: ~1m (5MB region, 8 shards, ~2300 examples)
-#   call_variants: TBD (needs TF_NUM_INTRAOP_THREADS=2 to avoid OOM)
+# Results from GCP t2a-standard-8 (8 vCPU Ampere Altra, 32GB RAM):
+#   make_examples: ~56s (5MB region, 8 shards, ~2324 examples)
+#   call_variants: ~32s (batch_size=256, 2.2s/100 examples)
 #   postprocess_variants: ~5s
+#   Total: ~1m33s
 
 DOCKER_IMAGE="deepvariant-arm64"
 USE_ONNX=false
@@ -18,9 +19,13 @@ DATA_DIR="${HOME}/benchmark-data"
 OUTPUT_DIR="${DATA_DIR}/output"
 REGION="chr20:10000000-15000000"
 NUM_SHARDS=8
-# Limit TF threads to avoid OOM on 16GB instances.
-# TF SavedModel + InceptionV3 uses ~15GB with 8 threads.
-TF_THREADS=2
+# TF threads — use all available by default.
+TF_THREADS=8
+# Docker memory limit prevents TF from over-allocating.
+# TF's allocator grabs all available RAM; capping at 28GB keeps ~4GB for OS.
+DOCKER_MEM="28g"
+# Batch size for call_variants — 256 keeps peak memory reasonable.
+BATCH_SIZE=256
 
 while [[ $# -gt 0 ]]; do
   case $1 in
@@ -30,6 +35,8 @@ while [[ $# -gt 0 ]]; do
     --region) REGION="$2"; shift 2 ;;
     --shards) NUM_SHARDS="$2"; shift 2 ;;
     --tf-threads) TF_THREADS="$2"; shift 2 ;;
+    --docker-mem) DOCKER_MEM="$2"; shift 2 ;;
+    --batch-size) BATCH_SIZE="$2"; shift 2 ;;
     *) echo "Unknown option: $1"; exit 1 ;;
   esac
 done
@@ -39,6 +46,8 @@ echo "Docker image: ${DOCKER_IMAGE}"
 echo "Region: ${REGION}"
 echo "Shards: ${NUM_SHARDS}"
 echo "TF intra-op threads: ${TF_THREADS}"
+echo "Docker memory limit: ${DOCKER_MEM}"
+echo "Batch size: ${BATCH_SIZE}"
 echo "ONNX: ${USE_ONNX}"
 echo ""
 
@@ -82,9 +91,9 @@ done
 rm -rf "${OUTPUT_DIR}/intermediate"
 mkdir -p "${OUTPUT_DIR}"
 
-ONNX_FLAG=""
+CV_EXTRA_ARGS="--batch_size=${BATCH_SIZE}"
 if [[ "${USE_ONNX}" == "true" ]]; then
-  ONNX_FLAG="--use_onnx"
+  CV_EXTRA_ARGS="${CV_EXTRA_ARGS},--use_onnx=true,--onnx_model=/opt/models/wgs/model.onnx"
   echo "Using ONNX Runtime for inference"
 fi
 
@@ -93,6 +102,7 @@ echo "========== Running DeepVariant (${REGION})"
 START_TIME=$(date +%s)
 
 docker run --rm \
+  --memory="${DOCKER_MEM}" \
   -v "${DATA_DIR}:/data" \
   -v "${OUTPUT_DIR}:/output" \
   -e TF_NUM_INTRAOP_THREADS="${TF_THREADS}" \
@@ -108,7 +118,7 @@ docker run --rm \
     --num_shards="${NUM_SHARDS}" \
     --regions="${REGION}" \
     --intermediate_results_dir=/output/intermediate \
-    ${ONNX_FLAG}
+    --call_variants_extra_args="${CV_EXTRA_ARGS}"
 
 END_TIME=$(date +%s)
 ELAPSED=$((END_TIME - START_TIME))

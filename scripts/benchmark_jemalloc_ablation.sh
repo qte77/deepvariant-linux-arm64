@@ -13,7 +13,8 @@
 #     --data-dir /data \
 #     [--usd-per-hr 0.32] \
 #     [--use-onnx] [--onnx-model /path/to/model.onnx] \
-#     [--num-shards 16] [--batch-size 256]
+#     [--num-shards 16] [--batch-size 256] \
+#     [--tf-onednn-opts 0]  # Set to 0 for AmpereOne (SIGILL with OneDNN+ACL)
 set -euo pipefail
 
 # --- Defaults ---
@@ -27,6 +28,7 @@ NUM_SHARDS=""
 BATCH_SIZE=256
 DOCKER_MEM="28g"
 REGION="chr20"
+TF_ONEDNN_OPTS="1"
 
 # --- Parse args ---
 while [[ $# -gt 0 ]]; do
@@ -40,6 +42,7 @@ while [[ $# -gt 0 ]]; do
     --num-shards)  NUM_SHARDS="$2"; shift 2 ;;
     --batch-size)  BATCH_SIZE="$2"; shift 2 ;;
     --docker-mem)  DOCKER_MEM="$2"; shift 2 ;;
+    --tf-onednn-opts) TF_ONEDNN_OPTS="$2"; shift 2 ;;
     *) echo "Unknown arg: $1"; exit 1 ;;
   esac
 done
@@ -75,6 +78,7 @@ echo "CPU: ${CPU_MODEL}"
 echo "BF16: ${BF16_SUPPORT}"
 echo "jemalloc path: ${JEMALLOC_PATH}"
 echo "ORT version: ${ORT_VERSION}"
+echo "OneDNN: TF_ENABLE_ONEDNN_OPTS=${TF_ONEDNN_OPTS}"
 echo "Shards: ${NUM_SHARDS}, Batch: ${BATCH_SIZE}"
 echo "Region: ${REGION}"
 if [[ -n "${USD_PER_HR}" ]]; then
@@ -95,7 +99,7 @@ if [[ -n "${USE_ONNX}" ]]; then
 fi
 
 # Common env vars for TF/ONNX optimization
-COMMON_ENVS="-e TF_ENABLE_ONEDNN_OPTS=1 -e CUDA_VISIBLE_DEVICES="
+COMMON_ENVS="-e TF_ENABLE_ONEDNN_OPTS=${TF_ONEDNN_OPTS} -e CUDA_VISIBLE_DEVICES="
 
 # --- RSS monitoring helper ---
 # Polls docker stats every 1s, records peak memory usage in MB.
@@ -284,7 +288,8 @@ print(round(max(0, overhead), 1))
     "use_onnx": ${USE_ONNX:-false},
     "onnx_model": "${ONNX_MODEL}",
     "usd_per_hr": ${USD_PER_HR:-null},
-    "docker_mem": "${DOCKER_MEM}"
+    "docker_mem": "${DOCKER_MEM}",
+    "tf_onednn_opts": ${TF_ONEDNN_OPTS}
   }
 }
 JSONEOF

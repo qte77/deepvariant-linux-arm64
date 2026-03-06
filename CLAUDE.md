@@ -291,27 +291,31 @@ INT8 matches or exceeds BF16 in all tested stratification regions. No localized 
 
 1. **Fix OMP make_examples overhead (DONE)** — OMP env vars scoped per-subprocess in `run_deepvariant.py` via explicit `env=` dicts. Benchmarked with 3 runs: make_examples 299s avg (down from 307s, ~2.6% gain), call_variants 194s avg, postprocess 14s avg, total 507s avg (down from 516s). The OMP fix recovered only 8s of the 29s gap vs BF16 make_examples (278s). The remaining ~21s is baseline variance, not OMP-related. Postprocess 14s vs 24s (BF16) confirmed real across 3 runs — likely due to ONNX output format differences.
 
-2. **Graviton4 (c8g) benchmark (DONE — partial)** — Benchmarked on c8g.4xlarge (16 vCPU, 32 GB, Neoverse V2). Two issues discovered:
-   - **TF SavedModel OOM on 32 GB:** TF allocates ~26 GB RSS for InceptionV3 SavedModel. When call_variants forks postprocess subprocess, copy-on-write pages push total >32 GB → Linux OOM killer. Confirmed via `dmesg`: `anon-rss:31227804kB`. Needs c8g.8xlarge (64 GB) for TF BF16 full pipeline.
-   - **ONNX FP32 works fine** (~2-3 GB memory): ME 232s, CV 360s (0.446 s/100), PP 10s, total 602s (2-run avg).
-   - **Standalone TF BF16 CV:** 0.328 s/100 — 29% faster than Graviton3 FP32 (0.379) but 41% slower than Graviton3 BF16 (0.232). This is unexpected and may indicate the OneDNN BF16 path isn't fully optimized for Neoverse-V2, or Graviton3 BF16 BFMMLA has higher throughput than expected.
-   - **ME speedup:** Graviton4 ME 232s vs Graviton3 ME 278s = **17% faster** (pure C++ binary, expected from wider V2 pipelines).
-   - **Postprocess:** 10s on Graviton4 vs 14s (INT8) / 24s (BF16) on Graviton3.
+2. **Graviton4 (c8g) benchmark (DONE)** — Benchmarked on c8g.4xlarge (16 vCPU, 32 GB, Neoverse V2).
+   - **INT8 ONNX (2-run avg):** ME ~194s, CV ~158s (0.197 s/100), PP ~6s, total **~366s (6m06s)**. CV rate is **14% faster** per-core than Graviton3 (0.225 s/100). ME is **35% faster** (194s vs 299s). Total 28% faster than Graviton3 INT8 (366s vs 507s).
+   - **ONNX FP32 (2-run avg):** ME 232s, CV 360s (0.446 s/100), PP 10s, total 602s.
+   - **TF SavedModel OOM on 32 GB:** TF allocates ~26 GB RSS for InceptionV3 SavedModel. When call_variants forks postprocess subprocess, copy-on-write pages push total >32 GB → Linux OOM killer. Needs c8g.8xlarge (64 GB) for TF BF16 full pipeline.
+   - **Standalone TF BF16 CV:** 0.328 s/100 — 29% faster than Graviton3 FP32 (0.379) but 41% slower than Graviton3 BF16 (0.232).
+   - **Cost:** $0.68/hr × ~4.9hr WGS = ~$3.33/genome (INT8 ONNX).
 
 3. **Oracle A2 (AmpereOne) benchmark (DONE)** — Benchmarked on VM.Standard.A2.Flex (16 OCPU, 32 GB). Oracle A1 (Altra) had no capacity in Frankfurt free tier.
-   - **SIGILL with OneDNN+ACL:** Docker image compiled for Neoverse-N1. AmpereOne (Siryn) has different microarchitecture → `Fatal Python error: Illegal instruction` in TF during make_examples. Fix: `TF_ENABLE_ONEDNN_OPTS=0` (Eigen fallback).
+   - **SIGILL with OneDNN+ACL:** Docker image compiled for Neoverse-N1. AmpereOne (Siryn) has different microarchitecture → `Fatal Python error: Illegal instruction` in TF during make_examples (`small_model/inference.py:141`). Fix: `TF_ENABLE_ONEDNN_OPTS=0` (Eigen fallback).
+   - **INT8 ONNX (2-run avg):** ME ~280s, CV ~245s (0.358 s/100), PP ~17s, total **~542s (9m02s)**. Cost: **~$2.32/genome** — cheapest INT8 config.
    - **TF Eigen FP32:** ME 287s, CV 325s (0.387 s/100), PP 17s, total **629s**. Rate matches Graviton3 FP32 (0.379 s/100).
-   - **ONNX FP32:** ME 277s, CV 613s (0.759 s/100), PP 17s, total **907s**. ONNX is 1.96x slower than TF Eigen on AmpereOne — worse than the 1.24x gap on Neoverse-N1.
-   - **Cost winner:** Oracle A2 at **$2.49/genome** (TF Eigen) is the cheapest tested platform despite slower per-core. At $0.32/hr for 16 OCPUs, the low hourly rate dominates.
-   - **Rebuild opportunity:** AmpereOne has BF16+i8mm flags. A Docker image rebuilt with OneDNN targeting AmpereOne ISA would enable BF16 fast math and likely reach ~0.25 s/100, pushing cost to ~$1.50/genome.
+   - **ONNX FP32:** ME 277s, CV 613s (0.759 s/100), PP 17s, total **907s**. ONNX is 1.96x slower than TF Eigen on AmpereOne.
+   - **Cost winner:** Oracle A2 at **$2.32/genome** (INT8 ONNX) is the cheapest tested platform. At $0.32/hr for 16 OCPUs, the low hourly rate dominates.
+   - **BF16 OneDNN test:** SIGILL confirmed even in make_examples' small model inference — the entire OneDNN+ACL stack is incompatible with AmpereOne.
+   - **Rebuild opportunity:** AmpereOne has BF16+i8mm flags. A Docker image rebuilt with OneDNN targeting AmpereOne ISA would enable BF16 fast math and could reach ~$1.50/genome.
 
 4. **Oracle A1 INT8 benchmark (BLOCKED)** — Persistent "Out of host capacity" for A1 instances in all 3 Frankfurt ADs. Free tier limits to 1 region subscription. Paid upgrade pending.
 
 5. **Stratified region validation (DONE)** — INT8 passes all GIAB stratification regions. Production caveat cleared. See section 2.2c above.
 
-5. **32 vCPU + fast_pipeline** (blocked on AWS limit) — Biggest remaining lever. Memory risk is backend-specific: BF16 fast_pipeline (TF+OneDNN, ~15 GB RSS) is the actual risk on 64 GB machine; INT8 fast_pipeline (ONNX, ~2-3 GB) is almost certainly fine. Profile both separately.
+5. **fast_pipeline at 16 vCPU (DONE — SLOWER than sequential)** — Benchmarked on Graviton3 c7g.4xlarge with BF16. Run1: 696s, Run2: 689s, avg **~693s** — **42% slower than sequential 487s**. CV rate degraded from 0.232 to 0.290 s/100 (25% slower) due to CPU contention between concurrent ME+CV. fast_pipeline only benefits with 32+ vCPU where ME and CV can have dedicated CPU cores.
 
-6. **SVE Smith-Waterman** (conditional on #5) — Only if 32 vCPU fast_pipeline shows ME > CV (make_examples becomes binding constraint). Current libssw uses sse2neon translation. Native SVE or parasail with SVE backend could give 20-40% ME speedup. High effort, defer until 32 vCPU data confirms need.
+6. **32 vCPU + fast_pipeline** (blocked on AWS limit increase to 64 vCPU) — The key remaining lever. At 32 vCPU, ME and CV each get ~16 effective cores, eliminating the contention problem. Expected: wall ≈ max(ME_32, CV_32) + PP ≈ 170-210s. Memory risk is backend-specific: BF16 (TF+OneDNN, ~15 GB RSS + ME ~10 GB) needs 64 GB; INT8 (ONNX, ~2-3 GB) fits in 32 GB.
+
+7. **SVE Smith-Waterman** (conditional on #6) — Only if 32 vCPU fast_pipeline shows ME > CV. High effort, defer until data confirms need.
 
 ### 2.3 EfficientNet-B3 Model (DEAD END)
 
@@ -333,10 +337,10 @@ INT8 matches or exceeds BF16 in all tested stratification regions. No localized 
 | BF16 on Graviton3+ | **call_variants -38% (1.61x)** | **DONE** | 8m06s total (0.232s/100) on Graviton3 16-vCPU |
 | INT8 static quantization (ONNX) | **2.3x over ONNX FP32** | **DONE** | 0.225s/100 — matches BF16, no additional gain on Graviton3 |
 | OMP env scoping (per-subprocess) | ME: 307→299s (2.6%), total 516→507s | **DONE** | 3-run avg; remaining 21s gap vs BF16 ME is baseline variance |
-| Graviton4 (Neoverse V2) | ME 17% faster, CV TBD (OOM) | **PARTIAL** | ME 232s (vs 278s G3), ONNX CV 0.446, standalone BF16 CV 0.328 s/100 |
-| Oracle A2 (AmpereOne) | **$2.49/genome** (cheapest) | **DONE** | TF Eigen 629s; OneDNN SIGILL, needs Docker rebuild |
-| Scaling to 32+ vCPU | Est. 1.5x wall time | **BLOCKED** | AWS vCPU limit = 16 |
-| fast_pipeline (concurrent ME+CV) | Est. 1.3x wall time | **TODO** | Not tested on Linux ARM64 |
+| Graviton4 INT8 ONNX (Neoverse V2) | **28% faster total** vs Graviton3 INT8 | **DONE** | 366s (0.197s/100), ME 194s — ~$3.33/genome |
+| Oracle A2 INT8 ONNX (AmpereOne) | **$2.32/genome** (cheapest) | **DONE** | 542s (0.358s/100); OneDNN SIGILL, needs Docker rebuild |
+| fast_pipeline at 16 vCPU | **42% SLOWER** (CPU contention) | **DONE** | 693s vs 487s sequential — needs 32+ vCPU |
+| Scaling to 32+ vCPU + fast_pipeline | Est. 170-210s chr20 | **BLOCKED** | AWS vCPU limit = 16 |
 | KMP_AFFINITY + system allocator | **30% REGRESSION** | **REVERTED** | Do not re-attempt |
 | ~~EfficientNet-B3~~ | **3x SLOWER** | **DEAD END** | Depthwise separable conv penalty |
 | ~~MobileNetV2~~ | **Same architecture class** | **DEAD END** | Same depthwise conv penalty |
@@ -488,6 +492,25 @@ From macOS profiling:
 
 **On Linux ARM64:** Profile with `perf stat` for L1 cache miss rates and `perf record` for hotspot identification. The hot path is the same on any architecture.
 
+### Operational Pitfalls (Docker + Cloud Instances)
+
+These are common issues encountered when running benchmarks on cloud ARM64 instances:
+
+| Issue | Impact | Fix |
+|-------|--------|-----|
+| **Docker output files owned by root** | Benchmark scripts with `rm -rf` and `set -euo pipefail` crash on re-runs | Always `sudo chown -R ubuntu:ubuntu /data/output/` before re-running, or run Docker with `--user $(id -u):$(id -g)` |
+| **Repacking `.zip` Python apps breaks native `.so` files** | `python3 -m zipfile -c` includes `.so` files that become invalid; call_variants crashes with "invalid ELF header" | Never repack zip-based Python apps. Instead, copy the entire `.zip` from a working image, or build a proper Docker layer |
+| **`/data/flags/` or `/data/output/` missing on fresh instance** | Benchmark scripts crash at `mkdir -p` if parent `/data/` is root-owned | Create data dirs with `sudo mkdir -p /data/{flags,output,...} && sudo chown -R ubuntu:ubuntu /data` |
+| **GCS reference download fails with `curl -sO`** | Returns XML error page instead of file (redirect issue) | Use `wget -q` instead of `curl -sO` for GCS public data |
+| **AWS vCPU limit blocks larger instances** | Cannot launch c7g.8xlarge/c8g.8xlarge without quota increase | Request via AWS Console (IAM user needs `servicequotas:RequestServiceQuotaIncrease` permission for CLI) |
+| **`--memory=28g` Docker flag required** | TF allocator grabs ALL available RAM without this limit | Always set `--memory=28g` (or appropriate limit) |
+| **Docker entrypoint sets OMP vars** | `docker_entrypoint.sh` sets `OMP_NUM_THREADS`, `OMP_PROC_BIND`, `OMP_PLACES` — leaks to all children in fast_pipeline | Override entrypoint with `--entrypoint /bin/bash` and unset OMP vars before fast_pipeline |
+| **fast_pipeline at 16 vCPU is SLOWER than sequential** | CPU contention between concurrent ME+CV degrades CV rate from 0.232 to 0.291 s/100 (25% slower), total 693s vs 487s | fast_pipeline only benefits with 32+ vCPU where ME and CV can use separate cores |
+| **ghcr.io Docker pull requires auth on fresh instances** | `docker pull ghcr.io/antomicblitz/...` fails without login on new instances | Run `echo "$PAT" \| docker login ghcr.io -u antomicblitz --password-stdin` first |
+| **GCS reference genome URL changed** | `genomics-public-data` bucket returns 404 for `.fna.gz` | Use `deepvariant/case-study-testdata` bucket instead |
+
+**Important: Monitor instance setup scripts.** When spinning up new cloud instances and running setup scripts (Docker install, data download, image pull), check for errors every 60 seconds for the first 5 minutes. Many failures (wrong URLs, auth issues, permission errors) happen within the first minute — waiting 10+ minutes before checking wastes time and money.
+
 ***
 
 ## Data Transfer: Unified vs Discrete Memory
@@ -523,13 +546,12 @@ Apple Silicon's unified memory makes CPU→GPU data transfer free. On Linux ARM6
 - [x] INT8 accuracy: SNP F1=0.9978, INDEL F1=0.9962 (matches BF16, passes gate)
 - [x] OMP env var scoping: per-subprocess env dicts in run_deepvariant.py (benchmarked: 307→299s ME, 2.6% gain)
 - [x] Stratified region validation: INT8 passes all GIAB regions (homopolymers, STRs, segdups)
-- [x] Graviton4 (c8g) benchmark: ONNX FP32 602s, standalone BF16 CV 0.328s/100 (TF OOM on 32 GB)
-- [x] Oracle A2 (AmpereOne) benchmark: TF Eigen 629s ($2.49/genome), ONNX 907s (OneDNN SIGILL)
-- [ ] Oracle A1 INT8 benchmark (blocked: no capacity in Frankfurt)
+- [x] Graviton4 (c8g) benchmark: INT8 ONNX 366s (0.197s/100), ONNX FP32 602s, TF BF16 OOM on 32 GB
+- [x] Oracle A2 (AmpereOne) benchmark: INT8 ONNX 542s ($2.32/genome), TF Eigen 629s ($2.49/genome), BF16 SIGILL confirmed
+- [x] fast_pipeline on Linux ARM64: works but **42% SLOWER at 16 vCPU** (693s vs 487s sequential — CPU contention)
+- [ ] 32 vCPU + fast_pipeline (requires AWS vCPU limit increase to 64)
 - [ ] Graviton4 BF16 full pipeline on c8g.8xlarge (64 GB) — TF OOM on 32 GB
-- [ ] Oracle A2 with rebuilt Docker image (OneDNN targeting AmpereOne ISA + BF16)
-- [ ] Scale to 32+ vCPU (requires AWS vCPU limit increase)
-- [ ] fast_pipeline on Linux ARM64 (compiled, untested)
+- [ ] Oracle A2 alternative TF wheel testing or Docker rebuild for BF16
 
 ### v0.3.0 — GPU/NPU Acceleration (Future, Optional)
 - [ ] Jetson Orin CUDA path working
@@ -552,20 +574,20 @@ Apple Silicon's unified memory makes CPU→GPU data transfer free. On Linux ARM6
 | Google x86 (official) | 96 | $3.81 | — | ~1.3 hr | **$5.01** | [Official](https://github.com/google/deepvariant/blob/r1.9/docs/metrics.md) |
 | **Graviton3 FP32** | 16 | $0.58 | 9m41s | ~7.8 hr | **$4.50** | Measured |
 | **Graviton3 BF16** | 16 | $0.58 | 8m06s | ~6.5 hr | **$3.76** | Measured |
-| **Graviton3 INT8 ONNX** | 16 | $0.58 | ~8m36s | ~6.9 hr | **$4.00** | Measured |
+| **Graviton3 INT8 ONNX** | 16 | $0.58 | ~8m27s | ~6.8 hr | **$3.92** | Measured (3-run avg 507s) |
+| **Graviton4 INT8 ONNX** | 16 | $0.68 | 6m06s | ~4.9 hr | **$3.33** | Measured (2-run avg 366s) |
 | **Graviton4 ONNX FP32** | 16 | $0.68 | 10m02s | ~8.0 hr | **$5.07** | Measured (ONNX due to TF OOM on 32 GB) |
 | **Graviton4 BF16** (standalone CV) | 16 | $0.68 | ~8m32s* | ~6.8 hr | ~**$4.31** | Partial (CV measured, ME from ONNX run) |
+| **Oracle A2 INT8 ONNX** | 16 OCPU | $0.32 | 9m02s | ~7.2 hr | **$2.32** | Measured (2-run avg 542s) |
 | **Oracle A2 TF Eigen FP32** | 16 OCPU | $0.32 | 10m29s | ~8.4 hr | **$2.49** | Measured (Eigen: OneDNN SIGILL on AmpereOne) |
-| Oracle A2 ONNX FP32 | 16 OCPU | $0.32 | 15m07s | ~12.1 hr | $3.59 | Measured (ONNX slower than TF Eigen here) |
-| Graviton3 BF16 32 vCPU (projected) | 32 | $1.15 | ~4m30s | ~3.7 hr | ~$4.25 | Projected (linear ME, sub-linear CV) |
-| Graviton3 BF16 + fast_pipeline (projected) | 32 | $1.15 | ~3m30s | ~2.8 hr | ~$3.27 | Projected (concurrent ME+CV) |
-| Oracle A1 INT8 (projected) | 16 OCPU | $0.16 | TBD | TBD | TBD | Blocked: no capacity in Frankfurt |
+| Graviton3 fast_pipeline BF16 16 vCPU | 16 | $0.58 | 11m33s | ~9.3 hr | $5.37 | Measured — **42% SLOWER** (CPU contention) |
+| Graviton3 BF16 + fast_pipeline (projected) | 32 | $1.15 | ~3m30s | ~2.8 hr | ~$3.27 | Projected (32 vCPU eliminates contention) |
 
-*Measured WGS times extrapolated from chr20 wall time × 48.1 (~15-20% uncertainty). INT8 matches BF16 speed on Graviton3 (no additional gain); INT8 is for non-BF16 platforms. 32 vCPU projections: ME scales linearly, CV sub-linear (÷1.65 based on 8→16 vCPU GCP data). fast_pipeline: wall ≈ max(ME, CV) + PP.*
+*Measured WGS times extrapolated from chr20 wall time × 48.1 (~15-20% uncertainty). INT8 matches BF16 speed on Graviton3 (no additional gain); INT8 is for non-BF16 platforms. fast_pipeline at 16 vCPU is slower due to CPU contention — needs 32+ vCPU.*
 
 *Graviton4 BF16 full pipeline OOM-killed on 32 GB (c8g.4xlarge). TF SavedModel uses ~26 GB RSS; forking postprocess pushes total >32 GB. Standalone CV rate measured at 0.328 s/100 (BF16). ME time (232s) taken from ONNX run. Needs c8g.8xlarge (64 GB) for full TF BF16 pipeline.*
 
-*Oracle A2 (AmpereOne/Siryn) uses TF Eigen fallback because OneDNN+ACL (compiled for Neoverse-N1) causes SIGILL on AmpereOne's ISA. A Docker image rebuild targeting AmpereOne would likely recover full OneDNN+ACL performance and enable BF16 (AmpereOne has BF16+i8mm). At $0.32/hr for 16 OCPUs, Oracle A2 is the cheapest option at $2.49/genome despite slower per-core performance.*
+*Oracle A2 (AmpereOne/Siryn) uses TF Eigen fallback or ONNX because OneDNN+ACL (compiled for Neoverse-N1) causes SIGILL on AmpereOne's ISA. INT8 ONNX is the fastest working backend at $2.32/genome. A Docker image rebuild targeting AmpereOne would enable BF16 (AmpereOne has BF16+i8mm flags) and could reach ~$1.50/genome.*
 
 ***
 

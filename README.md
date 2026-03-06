@@ -18,9 +18,10 @@ ARM64 cloud instances are 25-50% cheaper per vCPU than x86 equivalents. This for
 | Sentieon DNAscope (Graviton) | ~1-2 hr | ~$2-4 + **per-sample license** | Proprietary |
 | NVIDIA Parabricks (GPU) | 8-16 min | <$2 + **license** | Proprietary |
 | **This fork (16 vCPU Graviton3, BF16)** | **~6.5 hr** | **~$3.76** | **Open source** |
-| **This fork (16 OCPU Oracle A2, FP32)** | **~8.4 hr** | **~$2.49** | **Open source** |
+| **This fork (16 vCPU Graviton4, INT8)** | **~4.9 hr** | **~$3.33** | **Open source** |
+| **This fork (16 OCPU Oracle A2, INT8)** | **~7.2 hr** | **~$2.32** | **Open source** |
 
-> **Already cheaper than Google's x86 reference** — Graviton3 BF16 at $3.76/genome (vs $5.01), Oracle A2 at $2.49/genome. With scaling to 32+ vCPU and fast_pipeline, targeting ~2.5 hr at ~$3/genome on Graviton. Oracle A2 with a rebuilt Docker image (enabling BF16) could push below $2/genome.
+> **Already cheaper than Google's x86 reference** — Oracle A2 INT8 at $2.32/genome, Graviton3 BF16 at $3.76/genome (vs $5.01). With scaling to 32+ vCPU and fast_pipeline, targeting ~2.5 hr at ~$3/genome on Graviton. Oracle A2 with a rebuilt Docker image (enabling BF16) could push below $2/genome.
 
 **Use this fork when** you want open-source DeepVariant on ARM64, or you are cost-sensitive and can tolerate longer runtimes (batch processing, research pipelines). **Use GPU-accelerated DeepVariant** when you need fast turnaround.
 
@@ -39,15 +40,17 @@ All benchmarks: GIAB HG003, full chr20, accuracy validated with `rtg vcfeval`. G
 | AWS Graviton3 | 16 | FP32 | 0.379 s/100 | 9m41s |
 | **AWS Graviton3** | **16** | **BF16** | **0.232 s/100** | **8m06s** |
 | **AWS Graviton3** | **16** | **INT8 ONNX** | **0.238 s/100** | **~8m36s** |
+| **AWS Graviton4** | **16** | **INT8 ONNX** | **0.197 s/100** | **6m06s** |
 | AWS Graviton4 | 16 | ONNX FP32 | 0.446 s/100 | 10m02s |
 | AWS Graviton4 | 16 | BF16 (standalone CV) | 0.328 s/100 | ~8m32s* |
-| **Oracle A2 (AmpereOne)** | **16 OCPU** | **TF Eigen FP32** | **0.387 s/100** | **10m29s** |
+| **Oracle A2 (AmpereOne)** | **16 OCPU** | **INT8 ONNX** | **0.358 s/100** | **9m02s** |
+| Oracle A2 (AmpereOne) | 16 OCPU | TF Eigen FP32 | 0.387 s/100 | 10m29s |
 
 BF16 and INT8 achieve nearly identical call_variants rates on Graviton3. INT8 is the better choice on platforms **without** BF16 support (Neoverse-N1, Ampere Altra), where it provides a 2.3x speedup over FP32 ONNX (isolated benchmark: 0.225 s/100 vs 0.517 s/100).
 
 > **Note on isolated vs pipeline rates:** The isolated ONNX benchmark measures 0.225 s/100 for INT8, while the full pipeline measures 0.238 s/100. The difference is due to pipeline overhead (TF environment initialization, dataset loading, writer process coordination). The pipeline rate is the operationally relevant number.
 
-> **Graviton4 caveats:** *BF16 full pipeline OOM-killed on c8g.4xlarge (32 GB) — TF SavedModel uses ~26 GB RSS. ME time (232s) from ONNX run, CV rate from standalone test. Needs c8g.8xlarge (64 GB) for full TF BF16 pipeline. Oracle A2 uses TF Eigen fallback (OneDNN+ACL causes SIGILL on AmpereOne); a Docker rebuild would enable BF16.
+> **Graviton4 caveats:** *TF BF16 full pipeline OOM-killed on c8g.4xlarge (32 GB) — TF SavedModel uses ~26 GB RSS. INT8 ONNX works perfectly on 32 GB (~2-3 GB RSS). Needs c8g.8xlarge (64 GB) for full TF BF16 pipeline.* Oracle A2 uses ONNX or TF Eigen (OneDNN+ACL causes SIGILL on AmpereOne); a Docker rebuild would enable BF16.
 
 ### Pipeline Breakdown
 
@@ -65,11 +68,13 @@ BF16 and INT8 achieve nearly identical call_variants rates on Graviton3. INT8 is
 | Platform | Backend | ME | CV (rate) | PP | Total | $/hr | $/genome |
 |----------|---------|-----|-----------|-----|-------|------|----------|
 | Graviton3 (c7g) | BF16 | 278s | 185s (0.232) | 24s | **487s** | $0.58 | **$3.76** |
-| Graviton3 (c7g) | INT8 ONNX | 299s | 194s (0.237) | 14s | **507s** | $0.58 | **$4.00** |
-| Graviton4 (c8g) | ONNX FP32 | 232s | 360s (0.446) | 10s | **602s** | $0.68 | **$5.07** |
-| Oracle A2 (AmpereOne) | TF Eigen FP32 | 287s | 325s (0.387) | 17s | **629s** | $0.32 | **$2.49** |
+| Graviton3 (c7g) | INT8 ONNX | 299s | 194s (0.237) | 14s | **507s** | $0.58 | **$3.92** |
+| **Graviton4 (c8g)** | **INT8 ONNX** | **194s** | **158s (0.197)** | **6s** | **366s** | **$0.68** | **$3.33** |
+| Graviton4 (c8g) | ONNX FP32 | 232s | 360s (0.446) | 10s | **602s** | $0.68 | $5.07 |
+| **Oracle A2 (AmpereOne)** | **INT8 ONNX** | **280s** | **245s (0.358)** | **17s** | **542s** | **$0.32** | **$2.32** |
+| Oracle A2 (AmpereOne) | TF Eigen FP32 | 287s | 325s (0.387) | 17s | **629s** | $0.32 | $2.49 |
 
-> Graviton4 ONNX FP32 is a fallback — TF BF16 OOM-killed on 32 GB. Oracle A2 TF Eigen is a fallback — OneDNN SIGILL on AmpereOne. Both platforms have headroom for significant improvement with proper backend support.
+> Graviton4 INT8 ONNX is the fastest ARM64 configuration. Oracle A2 INT8 ONNX is the cheapest at $2.32/genome. Graviton4 TF BF16 OOM-killed on 32 GB — needs 64 GB instance. Oracle A2 OneDNN SIGILL — needs Docker rebuild for BF16. Both platforms have headroom for improvement.
 
 ### Accuracy
 
@@ -253,8 +258,8 @@ This fork modifies upstream DeepVariant v1.9.0 for ARM64 Linux compilation.
 - **Phase 1 (complete):** Native ARM64 build, Docker image, GIAB-validated pipeline.
 - **Phase 2A (complete):** BF16 on Graviton3+ — 1.61x call_variants speedup, zero accuracy loss.
 - **Phase 2B (complete):** INT8 static quantization — 2.3x over ONNX FP32, matches BF16 call_variants rate, stratified region validation passed.
-- **Phase 2C (complete):** OMP env fix, stratified validation, Graviton4 benchmark, Oracle A2 (AmpereOne) benchmark — $2.49/genome cheapest tested.
-- **Phase 2D (next):** Graviton4 BF16 on 64 GB instance, Oracle A2 Docker rebuild (OneDNN+BF16), 32+ vCPU + fast_pipeline. Target: ~2.5 hr at ~$3/genome on Graviton, <$2/genome on Oracle A2.
+- **Phase 2C (complete):** OMP env fix, stratified validation, Graviton4 ONNX FP32 benchmark, Oracle A2 TF Eigen benchmark — $2.49/genome cheapest tested.
+- **Phase 2D (in progress):** Graviton4 INT8 ONNX (366s, $3.33/genome), Oracle A2 INT8 ONNX (542s, $2.32/genome — new cheapest), fast_pipeline tested (needs 32+ vCPU). Remaining: 32 vCPU + fast_pipeline, Graviton4 BF16 on 64 GB, Oracle A2 Docker rebuild for BF16. Target: ~2.5 hr at ~$3/genome on Graviton, <$2/genome on Oracle A2.
 - **Phase 3 (future):** GPU/NPU acceleration (Jetson CUDA, RK3588 NPU).
 
 > **Note:** This project targets Illumina short-read WGS/WES workflows. For long-read ONT or PacBio data, consider [Clair3](https://github.com/HKU-BAL/Clair3) which has community ARM64 support.

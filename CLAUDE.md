@@ -69,11 +69,11 @@ The `call_variants` step runs Inception V3 (23.9M params) CNN inference on 100×
 
 **Phase 2 (Inference acceleration — revised after literature review + experiments):**
 - **2A: TF OneDNN warmup (DONE)** — SavedModel warmup gives ~4% call_variants improvement. KMP_AFFINITY and TF_ONEDNN_USE_SYSTEM_ALLOCATOR are **HARMFUL** (30% regression, reverted).
-- **2B: BF16 on Graviton3+ (TODO)** — `DNNL_DEFAULT_FPMATH_MODE=BF16` already configured. Expected 20-40% CNN speedup. Needs Graviton3 hardware (AWS c7g) to benchmark.
+- **2B: BF16 on Graviton3+ (DONE)** — 1.61x call_variants speedup on Graviton3, zero accuracy loss. See section 2.2b.
 - **2C: INT8 quantization of InceptionV3 (DONE)** — Static INT8 via ONNX Runtime gives 2.3x over ONNX FP32 but matches BF16 (no additional gain on Graviton3). Viable alternative for non-BF16 platforms. Dynamic INT8 unsupported on ARM64 (ConvInteger op missing).
 - **~~2D: EfficientNet-B3~~** — **DEAD END.** 3x slower on CPU. Depthwise separable convolutions have poor GEMM density. This generalizes to ALL "efficient" CNN architectures (MobileNetV2, MnasNet, etc.). See `TRAINING_EXPERIMENT.md`.
 
-**Phase 2 ONNX status:** The `--use_onnx` flag is implemented and works. On Neoverse-N1 (no BF16), ONNX CPUExecutionProvider is slower than TF+OneDNN. On Graviton3+ (BF16), enabling `mlas.enable_gemm_fastmath_arm64_bfloat16` may reverse this — needs benchmarking on actual Graviton hardware.
+**Phase 2 ONNX status:** The `--use_onnx` flag is implemented and works. On Neoverse-N1 (no BF16), ONNX CPUExecutionProvider is slower than TF+OneDNN. On Graviton3+ with BF16, ONNX MLAS BF16 is configured but INT8 ONNX matches BF16 TF+OneDNN speed (0.225 vs 0.232 s/100) — no additional gain from ONNX BF16.
 
 **Phase 3 (GPU/NPU, optional):** TFLite + OpenCL for Mali, CUDA for Jetson. Only pursue after Phase 2 is validated.
 
@@ -197,7 +197,7 @@ ONNX integration is **complete** (`--use_onnx` flag, model conversion, Docker im
 **KMP_AFFINITY and TF_ONEDNN_USE_SYSTEM_ALLOCATOR — PROVEN HARMFUL:**
 Benchmarked `KMP_AFFINITY=granularity=core,compact,1,0` + `TF_ONEDNN_USE_SYSTEM_ALLOCATOR=1` on t2a-standard-16: **30% regression** (0.692s/100 vs 0.532s/100). Reverted in commit `cb0c37a3`. Do not re-attempt.
 
-**ONNX BF16 on Graviton3+ (already configured):** `mlas.enable_gemm_fastmath_arm64_bfloat16` is set in `call_variants.py` ONNX session setup. Only fires on hardware with BF16 (Graviton3+/Neoverse V1). Needs benchmarking on actual Graviton3 hardware (AWS c7g).
+**ONNX BF16 on Graviton3+ (configured, no additional gain):** `mlas.enable_gemm_fastmath_arm64_bfloat16` is set in `call_variants.py` ONNX session setup. Benchmarked on Graviton3: INT8 ONNX (0.225 s/100) already matches TF+OneDNN BF16 (0.232 s/100), so ONNX BF16 provides no further improvement.
 
 **Diagnostic:** Run `DNNL_VERBOSE=1` to confirm ACL kernels are active in oneDNN. If output shows `ref` or `cpp` instead of `acl` primitives, BF16 env var is being silently ignored.
 
@@ -284,7 +284,7 @@ INT8 matches or exceeds BF16 in all tested stratification regions. No localized 
 | BF16 + fast_pipeline | ~2.8 hr | $3.27 | 2.2x slower, 35% cheaper |
 | Google x86 reference | ~1.3 hr | $5.01 | baseline |
 
-**Blocker:** AWS vCPU limit is 16 — must request increase for 32+ vCPU benchmarks.
+**Resolved:** AWS vCPU quota increased to 32 — c7g.8xlarge and c8g.8xlarge benchmarks complete.
 
 ### 2.2d Phase 2D: Scaling + Platform Expansion (COMPLETE)
 
@@ -308,7 +308,7 @@ INT8 matches or exceeds BF16 in all tested stratification regions. No localized 
    - **BF16 OneDNN test:** SIGILL confirmed even in make_examples' small model inference — the entire OneDNN+ACL stack is incompatible with AmpereOne.
    - **Rebuild opportunity:** AmpereOne has BF16+i8mm flags. A Docker image rebuilt with OneDNN targeting AmpereOne ISA would enable BF16 fast math and could reach ~$1.50/genome.
 
-4. **Oracle A1 INT8 benchmark (BLOCKED)** — Persistent "Out of host capacity" for A1 instances in all 3 Frankfurt ADs. Free tier limits to 1 region subscription. Paid upgrade pending.
+4. **Oracle A1 INT8 benchmark (DEPRIORITIZED)** — Persistent "Out of host capacity" for A1 instances in Frankfurt. Oracle A2 benchmarks complete and cheaper ($2.14-2.32/genome); A1 would only be relevant for ultra-low-cost scenarios.
 
 5. **Stratified region validation (DONE)** — INT8 passes all GIAB stratification regions. Production caveat cleared. See section 2.2c above.
 
@@ -333,7 +333,7 @@ INT8 matches or exceeds BF16 in all tested stratification regions. No localized 
 
 8. **SVE Smith-Waterman** (deferred) — Only relevant if ME becomes the bottleneck. With parallel CV, ME is again the bottleneck on some platforms.
 
-### 2.2e Phase 2E: Runtime Optimizations (inter-op done, jemalloc PRELIMINARY)
+### 2.2e Phase 2E: Runtime Optimizations (inter-op done, jemalloc VERIFIED)
 
 **ONNX Inter-op Parallelism Sweep (Oracle A2 32-vCPU, INT8 ONNX) — NO IMPROVEMENT:**
 
@@ -350,40 +350,14 @@ Tested whether splitting ORT threads into intra-op (GEMM parallelism within oper
 
 **Verdict:** Inter-op parallelism does not help InceptionV3. GEMM intra-op parallelism dominates — taking threads away from intra-op to give to inter-op hurts performance. Flags added to `call_variants.py` (`--onnx_intra_op_threads`, `--onnx_inter_op_threads`) but defaults remain optimal (all intra, 1 inter).
 
-**jemalloc (Oracle A2 32-vCPU, INT8 ONNX) — PRELIMINARY, NEEDS VERIFICATION:**
+**jemalloc (VERIFIED on Graviton3 and Oracle A2):**
 
-Replaced glibc malloc with jemalloc via `LD_PRELOAD`. Isolated ME test and full pipeline test show different magnitude of improvement:
+jemalloc integrated into Docker image via `DV_USE_JEMALLOC=1`. Verified results:
 
-| Test | Without jemalloc | With jemalloc | Improvement | Runs |
-|------|-----------------|---------------|-------------|------|
-| ME-only run 1 | 345.9s | 294.0s | -15.0% | 1 |
-| ME-only run 2 | 307.5s | 282.6s | -8.1% | 1 |
-| **ME-only avg** | **326.7s** | **288.3s** | **-11.8%** | **2** |
-| CV rate (full pipeline) | 0.371 s/100 | 0.342 s/100 | **-7.8%** | 1 each |
-| Full pipeline wall | 625s | 610s | -2.4% | 1 each |
+- **Graviton3 (N=2):** ME -13.8%, CV +1.6% (noise), wall -9.0% (487→443s)
+- **Oracle A2 (N=4):** ME -17.0%, CV within noise, wall -6.9% (584→544s)
 
-**Reconciliation issue:** ME improvement (~38s) + CV improvement (~29s from rate change) should give ~67s total improvement, but full pipeline only shows 15s (625→610s). Possible causes: (1) only 2 runs — run-to-run variance at this scale is ±20-30s, masking the signal; (2) jemalloc increases RSS, potentially increasing TLB pressure at 32 vCPU; (3) thermal/frequency state differences between isolated and full pipeline tests.
-
-**CV rate improvement is notable:** The 7.8% CV improvement was unexpected. ONNX Runtime has its own arena allocator for tensor memory, but still calls through to the system allocator for session-level allocations, operator registration, and intermediate C++ objects. The fact that glibc was measurably slow here suggests AmpereOne's quad-core cluster topology amplifies allocator inefficiency — jemalloc's per-thread arenas reduce cross-core cache invalidation on this specific architecture.
-
-**Projected impact on production config (16 OCPU, 16 shards — the $2.32/genome config):**
-If the ~10% blended improvement holds: 542s → ~488s → **~$2.09/genome** (projected, not measured).
-
-**Before committing jemalloc to Docker image:**
-1. Run 4+ repetitions (with and without) on the 16-OCPU 16-shard config to establish variance bounds
-2. Monitor RSS via `docker stats` — confirm jemalloc doesn't increase peak RSS above instance memory limits
-3. Test on Graviton3 — verify this is a universal ARM64 improvement, not AmpereOne-specific
-4. Only then add `LD_PRELOAD` to Docker image
-
-**How to test (zero code changes):**
-```bash
-# On host:
-apt-get install libjemalloc2
-
-# In Docker run command:
--v /usr/lib/aarch64-linux-gnu/libjemalloc.so.2:/usr/lib/aarch64-linux-gnu/libjemalloc.so.2:ro \
--e LD_PRELOAD=/usr/lib/aarch64-linux-gnu/libjemalloc.so.2
-```
+ME improvement is the dominant factor — jemalloc's per-thread arenas reduce malloc contention in make_examples' C++ allocations. CV sees minimal benefit because ONNX Runtime and TF have their own internal allocators.
 
 ### 2.2f Phase 2F: Parallel call_variants (DONE — breaks CV floor)
 
@@ -615,7 +589,7 @@ These are common issues encountered when running benchmarks on cloud ARM64 insta
 | **Repacking `.zip` Python apps breaks native `.so` files** | `python3 -m zipfile -c` includes `.so` files that become invalid; call_variants crashes with "invalid ELF header" | Never repack zip-based Python apps. Instead, copy the entire `.zip` from a working image, or build a proper Docker layer |
 | **`/data/flags/` or `/data/output/` missing on fresh instance** | Benchmark scripts crash at `mkdir -p` if parent `/data/` is root-owned | Create data dirs with `sudo mkdir -p /data/{flags,output,...} && sudo chown -R ubuntu:ubuntu /data` |
 | **GCS reference download fails with `curl -sO`** | Returns XML error page instead of file (redirect issue) | Use `wget -q` instead of `curl -sO` for GCS public data |
-| **AWS vCPU limit blocks larger instances** | Cannot launch c7g.8xlarge/c8g.8xlarge without quota increase | Request via AWS Console (IAM user needs `servicequotas:RequestServiceQuotaIncrease` permission for CLI) |
+| **AWS vCPU limit blocks larger instances** | Cannot launch c7g.8xlarge/c8g.8xlarge without quota increase (resolved — quota increased to 32) | Request via AWS Console (IAM user needs `servicequotas:RequestServiceQuotaIncrease` permission for CLI) |
 | **`--memory=28g` Docker flag required** | TF allocator grabs ALL available RAM without this limit | Always set `--memory=28g` (or appropriate limit) |
 | **Docker entrypoint sets OMP vars** | `docker_entrypoint.sh` sets `OMP_NUM_THREADS`, `OMP_PROC_BIND`, `OMP_PLACES` — leaks to all children in fast_pipeline | Override entrypoint with `--entrypoint /bin/bash` and unset OMP vars before fast_pipeline |
 | **fast_pipeline at 16 vCPU is SLOWER than sequential** | CPU contention between concurrent ME+CV degrades CV rate from 0.232 to 0.291 s/100 (25% slower), total 693s vs 487s | fast_pipeline only benefits with 32+ vCPU where ME and CV can use separate cores |
@@ -651,7 +625,7 @@ Apple Silicon's unified memory makes CPU→GPU data transfer free. On Linux ARM6
 - [x] Benchmark: chr20:1-30M in 12m57s on 8-core Ampere (optimized TF)
 - [x] ONNX inference path implemented (`--use_onnx` flag)
 
-### v0.2.0 — Inference Acceleration (In Progress)
+### v0.2.0 — Inference Acceleration (COMPLETE — released as v1.9.0-arm64.2)
 - [x] ONNX model conversion and integration (complete, but slower than TF+OneDNN on N1)
 - [x] TF OneDNN warmup (~4% call_variants improvement)
 - [x] EfficientNet-B3 training pipeline built and model trained — **DEAD END: 3x slower on CPU**
@@ -680,9 +654,9 @@ Apple Silicon's unified memory makes CPU→GPU data transfer free. On Linux ARM6
 ### v1.0.0 — Production Release
 - [ ] Upstream PR to google/deepvariant with ARM64 support
 - [ ] Multi-arch Docker image (amd64 + arm64)
-- [ ] Published benchmark results on Graviton4, Ampere A1
-- [ ] Stratified GIAB validation on all backends (INT8, BF16, FP32)
-- [ ] Documentation and quickstart guide
+- [x] Published benchmark results on Graviton3, Graviton4, Oracle A2
+- [x] Stratified GIAB validation on all backends (INT8, BF16, FP32)
+- [x] Documentation and quickstart guide
 
 ***
 
@@ -805,8 +779,8 @@ deepvariant-linux-arm64/
 
 4. **`int64_t` type handling.** On Linux ARM64, `int64_t` = `long` (same as x86_64 Linux). The macOS port fixed `int64_t` = `long long` mismatches. These patches may not be needed on Linux ARM64 but should be verified — use `static_cast<int64_t>()` universally for safety.
 
-5. **TF+OneDNN is the primary inference backend.** Benchmarking showed ONNX Runtime CPUExecutionProvider is 24% slower than TF+OneDNN on Neoverse-N1. The ONNX ACL ExecutionProvider is community-maintained (16 operators, fragile builds) and not worth pursuing. ONNX may outperform TF on Graviton3+ via MLAS BF16 kernels — needs testing. The `--use_onnx` flag is implemented as an opt-in alternative.
+5. **TF+OneDNN is the primary inference backend.** Benchmarking showed ONNX Runtime CPUExecutionProvider is 24% slower than TF+OneDNN on Neoverse-N1. The ONNX ACL ExecutionProvider is community-maintained (16 operators, fragile builds) and not worth pursuing. On Graviton3+, INT8 ONNX matches BF16 TF+OneDNN speed (0.225 vs 0.232 s/100). The `--use_onnx` flag is implemented as an opt-in alternative, and is required for parallel CV (low memory footprint).
 
-6. **BF16 fast math on Graviton3+.** Graviton3 and newer support BF16 operations. Enable via `DNNL_DEFAULT_FPMATH_MODE=BF16`. Validate that variant calling accuracy is unaffected (BF16 has 8 mantissa bits vs FP32's 23 — sufficient for Inception V3/EfficientNet classification but must be verified).[7]
+6. **BF16 fast math on Graviton3+.** Graviton3 and newer support BF16 operations. Enable via `ONEDNN_DEFAULT_FPMATH_MODE=BF16`. Accuracy validated: BF16 = FP32 (SNP F1=0.9977, INDEL F1=0.9961 — identical). 38% call_variants speedup on Graviton3, zero accuracy loss.
 
 7. **EfficientNet-B3 is NOT faster than InceptionV3 on CPU.** Benchmarked at 0.31x the speed of InceptionV3 (3x slower) despite 3.2x fewer FLOPs. Depthwise separable convolutions and squeeze-and-excitation blocks produce many small operations with poor data reuse, while InceptionV3's dense Conv2D operations map to single large GEMM calls. FLOP count does not predict CPU inference speed — kernel efficiency and memory access patterns matter more. See `TRAINING_EXPERIMENT.md`.

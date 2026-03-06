@@ -1,21 +1,18 @@
-## DeepVariant ARM64 v1.9.0-arm64.3
+## DeepVariant ARM64 v1.9.0-arm64.4
 
 Compatible with google/deepvariant v1.9.0. Native ARM64 Linux build with
 hardware-accelerated inference.
 
 ### What's new in this release
 
-**Parallel call_variants benchmarks** — proves that splitting CV into 4 workers
-gives 1.9-2.5x CV speedup at 32 vCPU. Benchmark script only (not a user-facing
-tool). User-facing wrapper shipped in v1.9.0-arm64.4.
+**User-facing parallel call_variants** — `run_parallel_cv.sh` is a drop-in
+replacement for `run_deepvariant` that splits call_variants into N parallel
+workers. 1.9-2.5x CV speedup on 32+ vCPU machines with ONNX backend.
+Runs inside the Docker container — no host-level orchestration needed.
 
-**32-vCPU benchmarks** — Graviton3 (c7g.8xlarge), Graviton4 (c8g.8xlarge),
-and Oracle A2 (16 OCPU). BF16 and INT8 converge at 32 vCPU (~232s on
-Graviton4) because CV rate doesn't improve beyond 16 ORT threads.
-
-**Corrected benchmark data** — fixed $/genome calculation errors in Graviton4
-ONNX FP32 ($5.07->$5.47) and BF16 standalone (~$4.31->~$4.65). INT8 Graviton3
-rate updated to 3-run average (0.237 s/100).
+**Fixed autoconfig** — `DV_AUTOCONFIG=1` now works. `autoconfig.sh` was missing
+from the Docker image in arm64.2 and arm64.3 (silently non-functional). The
+script is now correctly included at `/opt/deepvariant/scripts/autoconfig.sh`.
 
 ### Recommended configurations
 
@@ -28,12 +25,27 @@ rate updated to 3-run average (0.237 s/100).
 
 \*N<4 runs. Parallel CV rows are projected (measured CV + measured sequential ME/PP).
 
-### Quick start
+### Quick start (parallel CV)
+
+```bash
+docker run -e DV_AUTOCONFIG=1 -e DV_USE_JEMALLOC=1 \
+  -v /path/to/data:/data --memory=56g \
+  ghcr.io/antomicblitz/deepvariant-arm64:v1.9.0-arm64.4 \
+  /opt/deepvariant/scripts/run_parallel_cv.sh \
+  --model_type=WGS \
+  --ref=/data/reference.fasta \
+  --reads=/data/input.bam \
+  --output_vcf=/data/output.vcf.gz \
+  --num_shards=32 \
+  --num_cv_workers=4
+```
+
+### Quick start (sequential, same as before)
 
 ```bash
 docker run -e DV_AUTOCONFIG=1 -e DV_USE_JEMALLOC=1 \
   -v /path/to/data:/data --memory=28g \
-  ghcr.io/antomicblitz/deepvariant-arm64:v1.9.0-arm64.3 \
+  ghcr.io/antomicblitz/deepvariant-arm64:v1.9.0-arm64.4 \
   /opt/deepvariant/bin/run_deepvariant \
   --model_type=WGS \
   --ref=/data/reference.fasta \
@@ -49,12 +61,10 @@ All backends pass GIAB HG003 gates (SNP F1 >= 0.9974, INDEL F1 >= 0.9940)
 including stratified validation across homopolymers, tandem repeats, and
 segmental duplications.
 
-### Known issues (fixed in v1.9.0-arm64.4)
+### Fixes from previous releases
 
-- **Parallel CV is benchmark-only** — `scripts/benchmark_parallel_cv.sh` is
-  hardcoded for HG003/chr20 testing. A user-facing wrapper
-  (`scripts/run_parallel_cv.sh`) ships in v1.9.0-arm64.4.
-- **`DV_AUTOCONFIG=1` does not work** — inherited from arm64.2. Fixed in arm64.4.
+- `DV_AUTOCONFIG=1` now works (was silently broken in arm64.2 and arm64.3)
+- Parallel CV now has a user-facing wrapper (was benchmark-only in arm64.3)
 
 ### Full changelog
 

@@ -50,6 +50,12 @@ All backends pass GIAB HG003 gates (SNP F1 >= 0.9974, INDEL F1 >= 0.9940)
 including stratified validation across homopolymers, tandem repeats, and
 segmental duplications.
 
+### Known issues (fixed in v1.9.0-arm64.4)
+
+- **`DV_AUTOCONFIG=1` does not work** — `autoconfig.sh` was not included in the
+  Docker image. The entrypoint silently skips it. Fixed in v1.9.0-arm64.4.
+- `DV_USE_JEMALLOC=1` works correctly.
+
 ### Full changelog
 
 See [CHANGELOG.md](../CHANGELOG.md) for the complete list of changes.

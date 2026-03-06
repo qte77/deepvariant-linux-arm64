@@ -3,6 +3,21 @@
 All notable changes to the DeepVariant ARM64 fork are documented here.
 Upstream compatibility: google/deepvariant v1.9.0
 
+## [v1.9.0-arm64.4] — 2026-03-06
+
+### Added
+- `scripts/run_parallel_cv.sh` — user-facing parallel call_variants wrapper.
+  Runs inside the Docker container as a drop-in replacement for run_deepvariant.
+  Splits call_variants into N parallel workers with scoped OMP_NUM_THREADS.
+  Requires ONNX backend (TF SavedModel would OOM with multiple workers).
+
+### Fixed
+- `autoconfig.sh` now included in Docker image. `DV_AUTOCONFIG=1` was silently
+  non-functional in arm64.2 and arm64.3 because the script was never COPY'd
+  into the image.
+- `run_parallel_cv.sh` included in Docker image at
+  `/opt/deepvariant/scripts/run_parallel_cv.sh`.
+
 ## [v1.9.0-arm64.3] — 2026-03-06
 
 ### Added
@@ -21,6 +36,11 @@ Upstream compatibility: google/deepvariant v1.9.0
   Graviton4 BF16 standalone ~$4.31→~$4.65.
 - INT8 Graviton3 rate updated to 3-run average: 0.238→0.237 s/100.
 - Removed stale status labels and superseded data across all docs.
+
+### Known Issues
+- Parallel CV is benchmark-only (`benchmark_parallel_cv.sh`), not user-facing.
+  User wrapper shipped in v1.9.0-arm64.4.
+- `DV_AUTOCONFIG=1` non-functional (inherited from arm64.2). Fixed in arm64.4.
 
 ## [v1.9.0-arm64.2] — 2026-03-06
 
@@ -53,6 +73,10 @@ Upstream compatibility: google/deepvariant v1.9.0
   OneDNN disabled to prevent SIGILL on AmpereOne.
 - Ablation runs now interleaved (off/on/off/on) to eliminate cache-warming
   ordering bias.
+
+### Known Issues
+- `DV_AUTOCONFIG=1` non-functional — `autoconfig.sh` not included in Docker
+  image. Entrypoint silently skips it. Fixed in v1.9.0-arm64.4.
 
 ### Dead Ends (Documented)
 - EfficientNet-B3: 3x slower than InceptionV3 on CPU (depthwise conv penalty).

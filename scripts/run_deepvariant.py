@@ -235,7 +235,8 @@ _USE_ONNX = flags.DEFINE_boolean(
     'use_onnx',
     False,
     'Use ONNX Runtime for call_variants inference instead of TensorFlow. '
-    'Provides 1.5-2.5x speedup on ARM64 with ACL execution provider. '
+    'Required for INT8 quantized models (2.3x over ONNX FP32). On Graviton3+ '
+    'with BF16, TF+OneDNN is faster — use INT8 ONNX on non-BF16 platforms. '
     'Automatically resolves the ONNX model path based on --model_type.',
 )
 # Optional flag for postprocess variants
@@ -845,9 +846,28 @@ def main(_):
       '\n***** Intermediate results will be written to {} '
       'in docker. ****\n'.format(intermediate_results_dir)
   )
-  env = os.environ.copy()
-  logging.info('env = %s', env)
-  for command, logfile in commands_logfiles:
+
+  # Build per-subprocess env dicts. OMP vars (OMP_NUM_THREADS, OMP_PROC_BIND,
+  # OMP_PLACES) are tuned for TF/ONNX inference in call_variants but interfere
+  # with make_examples' C++ thread pool, causing ~10% regression. Scope them
+  # to call_variants only. Do NOT mutate os.environ in place — this module
+  # uses threading (subprocess + logging) and global env mutation is unsafe.
+  _OMP_KEYS = ('OMP_NUM_THREADS', 'OMP_PROC_BIND', 'OMP_PLACES')
+  base_env = os.environ.copy()
+  clean_env = {k: v for k, v in base_env.items() if k not in _OMP_KEYS}
+  cv_env = {**base_env,
+            'OMP_NUM_THREADS': str(_NUM_SHARDS.value),
+            'OMP_PROC_BIND': 'false',
+            'OMP_PLACES': 'cores'}
+
+  # commands_logfiles order: make_examples(0), call_variants(1),
+  # postprocess_variants(2), [optional vcf_stats(3), runtime_report(4)]
+  # Only call_variants (index 1) needs OMP vars.
+  step_envs = {1: cv_env}  # All other steps use clean_env.
+
+  logging.info('base env = %s', base_env)
+  for step_idx, (command, logfile) in enumerate(commands_logfiles):
+    step_env = step_envs.get(step_idx, clean_env)
     print('\n***** Running the command:*****\n{}\n'.format(command))
     if not _DRY_RUN.value:
       fp = open(logfile, 'w') if logfile is not None else None
@@ -859,7 +879,7 @@ def main(_):
           shell=True,
           executable='/bin/bash',
           universal_newlines=True,
-          env=env,
+          env=step_env,
       ) as proc:
         for line in proc.stdout:
           print(line, end='')

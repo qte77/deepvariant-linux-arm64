@@ -18,16 +18,17 @@ ARM64 cloud instances are 25-50% cheaper per vCPU than x86 equivalents. This for
 | Sentieon DNAscope (Graviton) | ~1-2 hr | ~$2-4 + **per-sample license** | Proprietary |
 | NVIDIA Parabricks (GPU) | 8-16 min | <$2 + **license** | Proprietary |
 | **This fork (16 vCPU Graviton3, BF16)** | **~6.5 hr** | **~$3.76** | **Open source** |
+| **This fork (16 OCPU Oracle A2, FP32)** | **~8.4 hr** | **~$2.49** | **Open source** |
 
-> **Already cheaper than Google's x86 reference** ($3.76 vs $5.01) at 16 vCPU. With scaling to 32+ vCPU and fast_pipeline, targeting ~2.5 hr at ~$3/genome. INT8 quantization is also available for non-BF16 ARM64 platforms (Oracle A1, Hetzner CAX, GCP Tau T2A) — cost projections for those platforms are pending benchmarking.
+> **Already cheaper than Google's x86 reference** — Graviton3 BF16 at $3.76/genome (vs $5.01), Oracle A2 at $2.49/genome. With scaling to 32+ vCPU and fast_pipeline, targeting ~2.5 hr at ~$3/genome on Graviton. Oracle A2 with a rebuilt Docker image (enabling BF16) could push below $2/genome.
 
 **Use this fork when** you want open-source DeepVariant on ARM64, or you are cost-sensitive and can tolerate longer runtimes (batch processing, research pipelines). **Use GPU-accelerated DeepVariant** when you need fast turnaround.
 
 ---
 
-## Benchmarks (chr20, Graviton3)
+## Benchmarks (chr20, Multiple Platforms)
 
-All benchmarks: GIAB HG003, full chr20, AWS c7g.4xlarge (16 vCPU Graviton3), averaged over 2 runs (FP32/BF16) or single run (INT8), accuracy validated with `rtg vcfeval`.
+All benchmarks: GIAB HG003, full chr20, accuracy validated with `rtg vcfeval`. Graviton3 averaged over 2-3 runs; Graviton4 and Oracle A2 averaged over 2 runs.
 
 ### Inference Rate
 
@@ -38,32 +39,59 @@ All benchmarks: GIAB HG003, full chr20, AWS c7g.4xlarge (16 vCPU Graviton3), ave
 | AWS Graviton3 | 16 | FP32 | 0.379 s/100 | 9m41s |
 | **AWS Graviton3** | **16** | **BF16** | **0.232 s/100** | **8m06s** |
 | **AWS Graviton3** | **16** | **INT8 ONNX** | **0.238 s/100** | **~8m36s** |
+| AWS Graviton4 | 16 | ONNX FP32 | 0.446 s/100 | 10m02s |
+| AWS Graviton4 | 16 | BF16 (standalone CV) | 0.328 s/100 | ~8m32s* |
+| **Oracle A2 (AmpereOne)** | **16 OCPU** | **TF Eigen FP32** | **0.387 s/100** | **10m29s** |
 
 BF16 and INT8 achieve nearly identical call_variants rates on Graviton3. INT8 is the better choice on platforms **without** BF16 support (Neoverse-N1, Ampere Altra), where it provides a 2.3x speedup over FP32 ONNX (isolated benchmark: 0.225 s/100 vs 0.517 s/100).
 
 > **Note on isolated vs pipeline rates:** The isolated ONNX benchmark measures 0.225 s/100 for INT8, while the full pipeline measures 0.238 s/100. The difference is due to pipeline overhead (TF environment initialization, dataset loading, writer process coordination). The pipeline rate is the operationally relevant number.
 
-### Pipeline Breakdown (Graviton3, 16 vCPU)
+> **Graviton4 caveats:** *BF16 full pipeline OOM-killed on c8g.4xlarge (32 GB) — TF SavedModel uses ~26 GB RSS. ME time (232s) from ONNX run, CV rate from standalone test. Needs c8g.8xlarge (64 GB) for full TF BF16 pipeline. Oracle A2 uses TF Eigen fallback (OneDNN+ACL causes SIGILL on AmpereOne); a Docker rebuild would enable BF16.
 
-| Stage | FP32 | BF16 | INT8 ONNX |
+### Pipeline Breakdown
+
+**Graviton3 (c7g.4xlarge, 16 vCPU):**
+
+| Stage | FP32 | BF16 | INT8 ONNX (3-run avg) |
 |-------|------|------|-----------|
-| make_examples | 255s | 278s | 307s |
-| call_variants | 298s (0.379s/100) | 185s (0.232s/100) | 195s (0.238s/100) |
+| make_examples | 255s | 278s | 299s |
+| call_variants | 298s (0.379s/100) | 185s (0.232s/100) | 194s (0.237s/100) |
 | postprocess | 29s | 24s | 14s |
-| **Total** | **582s** | **487s** | **516s** |
+| **Total** | **582s** | **487s** | **507s** |
 
-> **INT8 make_examples is 29s slower than BF16.** make_examples is a C++ binary that does not use ONNX — the slowdown is likely caused by OMP environment variables (`OMP_NUM_THREADS`, `OMP_PROC_BIND`, `OMP_PLACES`) set for the ONNX call_variants step interfering with make_examples' C++ thread pool. This needs further investigation; it nearly cancels out the call_variants speedup, making INT8 slower end-to-end than BF16 on Graviton3 (516s vs 487s).
+**Cross-platform comparison (16 vCPU, best available backend):**
+
+| Platform | Backend | ME | CV (rate) | PP | Total | $/hr | $/genome |
+|----------|---------|-----|-----------|-----|-------|------|----------|
+| Graviton3 (c7g) | BF16 | 278s | 185s (0.232) | 24s | **487s** | $0.58 | **$3.76** |
+| Graviton3 (c7g) | INT8 ONNX | 299s | 194s (0.237) | 14s | **507s** | $0.58 | **$4.00** |
+| Graviton4 (c8g) | ONNX FP32 | 232s | 360s (0.446) | 10s | **602s** | $0.68 | **$5.07** |
+| Oracle A2 (AmpereOne) | TF Eigen FP32 | 287s | 325s (0.387) | 17s | **629s** | $0.32 | **$2.49** |
+
+> Graviton4 ONNX FP32 is a fallback — TF BF16 OOM-killed on 32 GB. Oracle A2 TF Eigen is a fallback — OneDNN SIGILL on AmpereOne. Both platforms have headroom for significant improvement with proper backend support.
 
 ### Accuracy
 
-All three configurations produce **equivalent accuracy** on GIAB HG003 chr20 (207,799 variant calls, aggregate F1):
+All three configurations produce **equivalent accuracy** on GIAB HG003 chr20 (207,799 variant calls, validated with `rtg vcfeval`):
+
+**Aggregate F1:**
 
 | Metric | FP32 | BF16 | INT8 ONNX |
 |--------|------|------|-----------|
-| SNP F1 | 0.9974 | 0.9974 | 0.9978 |
-| INDEL F1 | 0.9940 | 0.9940 | 0.9962 |
+| SNP F1 | 0.9977 | 0.9977 | 0.9978 |
+| INDEL F1 | 0.9961 | 0.9961 | 0.9962 |
 
-> **Caveat:** These are aggregate F1 scores on chr20. Stratified region validation (GIAB difficult regions: low-complexity, tandem repeats, homopolymers, segmental duplications) is pending. INT8 quantization can fail silently in high-homopolymer and tandem repeat contexts where aggregate F1 may mask localized degradation. Do not use INT8 in production without stratified validation.
+**Stratified region validation** (GIAB difficult regions, chr20, confidence-restricted):
+
+| Region | INT8 SNP | BF16 SNP | INT8 INDEL | BF16 INDEL |
+|--------|----------|----------|------------|------------|
+| Homopolymers (≥7bp) | 0.9985 | 0.9985 | 0.9967 | 0.9963 |
+| Simple Repeats | 0.9994 | 0.9994 | 0.9967 | 0.9961 |
+| Tandem Repeats (201-10000bp) | 0.9983 | 0.9983 | 0.9926 | 0.9926 |
+| Segmental Duplications | 0.9802 | 0.9744 | 0.9814 | 0.9814 |
+
+INT8 matches or exceeds BF16 accuracy in all tested stratification regions, including the difficult contexts where quantization commonly degrades (homopolymers, tandem repeats, segmental duplications).
 
 ---
 
@@ -224,9 +252,12 @@ This fork modifies upstream DeepVariant v1.9.0 for ARM64 Linux compilation.
 
 - **Phase 1 (complete):** Native ARM64 build, Docker image, GIAB-validated pipeline.
 - **Phase 2A (complete):** BF16 on Graviton3+ — 1.61x call_variants speedup, zero accuracy loss.
-- **Phase 2B (complete):** INT8 static quantization — 2.3x over ONNX FP32, matches BF16 call_variants rate, aggregate accuracy validated. Stratified region validation pending.
-- **Phase 2C (next):** Scale to 32+ vCPU + fast_pipeline (concurrent make_examples + call_variants). Target: ~2.5 hr at ~$3/genome. INT8 benchmarking on non-BF16 platforms (Oracle A1, Hetzner CAX).
+- **Phase 2B (complete):** INT8 static quantization — 2.3x over ONNX FP32, matches BF16 call_variants rate, stratified region validation passed.
+- **Phase 2C (complete):** OMP env fix, stratified validation, Graviton4 benchmark, Oracle A2 (AmpereOne) benchmark — $2.49/genome cheapest tested.
+- **Phase 2D (next):** Graviton4 BF16 on 64 GB instance, Oracle A2 Docker rebuild (OneDNN+BF16), 32+ vCPU + fast_pipeline. Target: ~2.5 hr at ~$3/genome on Graviton, <$2/genome on Oracle A2.
 - **Phase 3 (future):** GPU/NPU acceleration (Jetson CUDA, RK3588 NPU).
+
+> **Note:** This project targets Illumina short-read WGS/WES workflows. For long-read ONT or PacBio data, consider [Clair3](https://github.com/HKU-BAL/Clair3) which has community ARM64 support.
 
 ---
 

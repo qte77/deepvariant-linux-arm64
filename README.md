@@ -26,7 +26,7 @@ ARM64 cloud instances are 25-50% cheaper per vCPU than x86 equivalents. This for
 | This fork (16 vCPU Graviton4, INT8) | ~4.9 hr | ~$3.33 | Open source |
 | This fork (16 OCPU Oracle A2, INT8+jemalloc) | ~7.3 hr | ~$2.32† | Open source |
 
-> †Oracle pricing: 16 OCPU = $0.64/hr. jemalloc enabled (`-e DV_USE_JEMALLOC=1`). 4-way parallel CV projected from measured CV times + measured sequential ME/PP.
+> †Oracle pricing: $0.04/OCPU/hr. 16 OCPU (32 vCPU) = $0.64/hr; 8 OCPU (16 vCPU) = $0.32/hr. jemalloc enabled (`-e DV_USE_JEMALLOC=1`). 4-way parallel CV projected from measured CV times + measured sequential ME/PP.
 
 > **Already cheaper than Google's x86 reference** — Oracle A2 with 4-way parallel CV projected at ~$2.14/genome, Graviton4 at ~$3.13/genome (vs $5.01 x86). Oracle A2 with a rebuilt Docker image (enabling BF16) could push below $1.50/genome.
 
@@ -46,7 +46,7 @@ All benchmarks: GIAB HG003, full chr20, accuracy validated with `rtg vcfeval`. R
 | GCP t2a (Neoverse-N1) | 16 | FP32 | 0.512 s/100 | 7m22s |
 | AWS Graviton3 | 16 | FP32 | 0.379 s/100 | 9m41s |
 | **AWS Graviton3** | **16** | **BF16** | **0.232 s/100** | **8m06s** |
-| **AWS Graviton3** | **16** | **INT8 ONNX** | **0.238 s/100** | **~8m36s** |
+| **AWS Graviton3** | **16** | **INT8 ONNX** | **0.237 s/100** | **~8m27s** |
 | **AWS Graviton4** | **16** | **INT8 ONNX** | **0.197 s/100** | **6m06s** |
 | AWS Graviton4 | 16 | ONNX FP32 | 0.446 s/100 | 10m02s |
 | AWS Graviton4 | 16 | BF16 (standalone CV) | 0.328 s/100 | ~8m32s* |
@@ -55,7 +55,7 @@ All benchmarks: GIAB HG003, full chr20, accuracy validated with `rtg vcfeval`. R
 
 BF16 and INT8 achieve nearly identical call_variants rates on Graviton3. INT8 is the better choice on platforms **without** BF16 support (Neoverse-N1, Ampere Altra), where it provides a 2.3x speedup over FP32 ONNX (isolated benchmark: 0.225 s/100 vs 0.517 s/100).
 
-> **Note on isolated vs pipeline rates:** The isolated ONNX benchmark measures 0.225 s/100 for INT8, while the full pipeline measures 0.238 s/100. The difference is due to pipeline overhead (TF environment initialization, dataset loading, writer process coordination). The pipeline rate is the operationally relevant number.
+> **Note on isolated vs pipeline rates:** The isolated ONNX benchmark measures 0.225 s/100 for INT8, while the full pipeline measures 0.237 s/100 (3-run avg). The difference is due to pipeline overhead (TF environment initialization, dataset loading, writer process coordination). The pipeline rate is the operationally relevant number.
 
 > **Graviton4 caveats:** *TF BF16 full pipeline OOM-killed on c8g.4xlarge (32 GB) — TF SavedModel uses ~26 GB RSS. INT8 ONNX works perfectly on 32 GB (~2-3 GB RSS). Needs c8g.8xlarge (64 GB) for full TF BF16 pipeline.* Oracle A2 uses ONNX or TF Eigen (OneDNN+ACL causes SIGILL on AmpereOne); a Docker rebuild would enable BF16.
 
@@ -78,7 +78,7 @@ BF16 and INT8 achieve nearly identical call_variants rates on Graviton3. INT8 is
 | Graviton3 (c7g) | BF16 | **on** | 242s | 188s (0.235) | 9s | **443s** | $0.58 | **$3.43** | 2* |
 | Graviton3 (c7g) | INT8 ONNX | off | 299s | 194s (0.237) | 14s | **507s** | $0.58 | **$3.92** | 3 |
 | **Graviton4 (c8g)** | **INT8 ONNX** | **off** | **194s** | **158s (0.197)** | **6s** | **366s** | **$0.68** | **$3.33** | 2* |
-| Graviton4 (c8g) | ONNX FP32 | off | 232s | 360s (0.446) | 10s | **602s** | $0.68 | $5.07 | 2* |
+| Graviton4 (c8g) | ONNX FP32 | off | 232s | 360s (0.446) | 10s | **602s** | $0.68 | $5.47 | 2* |
 | **Oracle A2 (AmpereOne)** | **INT8 ONNX** | **off** | **253s** | **315s (0.389)** | **11s** | **584s** | **$0.32** | **$2.49** | **4** |
 | **Oracle A2 (AmpereOne)** | **INT8 ONNX** | **on** | **210s** | **318s (0.393)** | **12s** | **544s** | **$0.32** | **$2.32** | **4** |
 | Oracle A2 (AmpereOne) | TF Eigen FP32 | off | 287s | 325s (0.387) | 17s | **629s** | $0.32 | $2.69 | 2* |
@@ -91,7 +91,7 @@ BF16 and INT8 achieve nearly identical call_variants rates on Graviton3. INT8 is
 | **Graviton3** (c7g.8xlarge) | 32 | 283s | **74s** | **~218s** | $1.15 | **~$3.35** | 4 |
 | **Oracle A2** (16 OCPU) | 32 | 418s | **114s** | **~250s** | $0.64 | **~$2.14** | 2* |
 
-> *N<4 runs; wider confidence interval. Wall time includes ~4-5s Docker startup and inter-stage overhead. All $/genome use formula: `chr20_wall_s × 48.1 / 3600 × $/hr`. jemalloc: enable with `-e DV_USE_JEMALLOC=1`. Parallel CV: 4 independent workers each processing 8 of 32 shards — see `scripts/benchmark_parallel_cv.sh`. Projected wall = measured ME + measured 4-way CV + measured PP.
+> *N<4 runs; wider confidence interval. Wall time includes ~4-5s Docker startup and inter-stage overhead. All $/genome use formula: `chr20_wall_s × 48.1 / 3600 × $/hr`. Oracle A2 pricing: $0.04/OCPU/hr — 16-vCPU rows use 8 OCPU ($0.32/hr), 32-vCPU rows use 16 OCPU ($0.64/hr). jemalloc: enable with `-e DV_USE_JEMALLOC=1`. Parallel CV: 4 independent workers each processing 8 of 32 shards — see `scripts/benchmark_parallel_cv.sh`. Projected wall = measured ME + measured 4-way CV + measured PP.
 
 > **Parallel call_variants breaks through the CV bottleneck.** At 32 vCPU, sequential CV doesn't scale beyond 16 threads (GEMM saturation). 4-way parallel CV gives 1.9-2.5x CV speedup by running 4 workers at the saturated throughput on 1/4 of the data. Variant counts match sequential baseline exactly (207,799). Only works with ONNX backend (~3 GB/worker); TF SavedModel (~26 GB/worker) would OOM.
 

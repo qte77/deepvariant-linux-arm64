@@ -53,6 +53,8 @@ INT8 passes all GIAB stratification regions with no localized degradation.
 
 All benchmarks: GIAB HG003, full chr20. Cost formula:
 `$/genome = chr20_wall_s x 48.1 / 3600 x $/hr`.
+Oracle A2 pricing: $0.04/OCPU/hr — 16-vCPU rows use 8 OCPU ($0.32/hr),
+32-vCPU rows use 16 OCPU ($0.64/hr).
 
 ### Cross-Platform Comparison (16 vCPU)
 
@@ -62,7 +64,7 @@ All benchmarks: GIAB HG003, full chr20. Cost formula:
 | Graviton3 (c7g) | BF16 | **on** | 242s | 188s (0.235) | 9s | **443s** | $0.58 | **$3.43** | 2* |
 | Graviton3 (c7g) | INT8 ONNX | off | 299s | 194s (0.237) | 14s | **507s** | $0.58 | **$3.92** | 3 |
 | **Graviton4 (c8g)** | **INT8 ONNX** | **off** | **194s** | **158s (0.197)** | **6s** | **366s** | **$0.68** | **$3.33** | 2* |
-| Graviton4 (c8g) | ONNX FP32 | off | 232s | 360s (0.446) | 10s | **602s** | $0.68 | $5.07 | 2* |
+| Graviton4 (c8g) | ONNX FP32 | off | 232s | 360s (0.446) | 10s | **602s** | $0.68 | $5.47 | 2* |
 | **Oracle A2 (AmpereOne)** | **INT8 ONNX** | **off** | **253s** | **315s (0.389)** | **11s** | **584s** | **$0.32** | **$2.49** | **4** |
 | **Oracle A2 (AmpereOne)** | **INT8 ONNX** | **on** | **210s** | **318s (0.393)** | **12s** | **544s** | **$0.32** | **$2.32** | **4** |
 | Oracle A2 (AmpereOne) | TF Eigen FP32 | off | 287s | 325s (0.387) | 17s | **629s** | $0.32 | $2.69 | 2* |
@@ -120,7 +122,7 @@ All variant counts match sequential baseline exactly (207,799).
 | GCP t2a (Neoverse-N1) | 16 | FP32 | 0.512 s/100 | 7m22s |
 | AWS Graviton3 | 16 | FP32 | 0.379 s/100 | 9m41s |
 | **AWS Graviton3** | **16** | **BF16** | **0.232 s/100** | **8m06s** |
-| **AWS Graviton3** | **16** | **INT8 ONNX** | **0.238 s/100** | **~8m36s** |
+| **AWS Graviton3** | **16** | **INT8 ONNX** | **0.237 s/100** | **~8m27s** |
 | **AWS Graviton4** | **16** | **INT8 ONNX** | **0.197 s/100** | **6m06s** |
 | AWS Graviton4 | 16 | ONNX FP32 | 0.446 s/100 | 10m02s |
 | AWS Graviton4 | 16 | BF16 (standalone CV) | 0.328 s/100 | ~8m32s* |

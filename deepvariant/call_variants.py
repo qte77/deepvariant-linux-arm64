@@ -232,6 +232,19 @@ _ONNX_MODEL = flags.DEFINE_string(
     'Path to ONNX model file (.onnx). Required when --use_onnx is True. '
     'Convert from SavedModel using scripts/convert_model_onnx.py.',
 )
+_ONNX_INTRA_OP_THREADS = flags.DEFINE_integer(
+    'onnx_intra_op_threads',
+    0,
+    'Number of intra-op threads for ONNX Runtime (parallelism within a '
+    'single operator, e.g. GEMM). Default 0 = use cpu_count().',
+)
+_ONNX_INTER_OP_THREADS = flags.DEFINE_integer(
+    'onnx_inter_op_threads',
+    1,
+    'Number of inter-op threads for ONNX Runtime (parallelism between '
+    'independent graph nodes, e.g. InceptionV3 parallel branches). '
+    'Default 1. Try 2-4 with reduced intra_op_threads for potential gains.',
+)
 
 
 class ExecutionHardwareError(Exception):
@@ -761,6 +774,8 @@ def call_variants(
     allow_empty_examples: bool,
     use_onnx: bool = False,
     onnx_model: str = None,
+    onnx_intra_op_threads: int = 0,
+    onnx_inter_op_threads: int = 1,
 ):
   """Main driver of call_variants."""
   first_example = None
@@ -884,8 +899,10 @@ def call_variants(
     providers = [p for p in providers if p in available]
     logging.info('ONNX Runtime providers: %s', providers)
     sess_options = ort.SessionOptions()
-    sess_options.intra_op_num_threads = multiprocessing.cpu_count()
-    sess_options.inter_op_num_threads = 1
+    intra = onnx_intra_op_threads if onnx_intra_op_threads > 0 else multiprocessing.cpu_count()
+    sess_options.intra_op_num_threads = intra
+    sess_options.inter_op_num_threads = onnx_inter_op_threads
+    logging.info('ONNX threads: intra_op=%d, inter_op=%d', intra, onnx_inter_op_threads)
     # Enable BF16 fast math on Graviton3+ (Neoverse V1/V2 with BF16 support).
     # No effect on hardware without BF16 (e.g. Neoverse-N1).
     sess_options.add_session_config_entry(
@@ -1095,6 +1112,8 @@ def main(argv=()):
         allow_empty_examples=_ALLOW_EMPTY_EXAMPLES.value,
         use_onnx=_USE_ONNX.value,
         onnx_model=_ONNX_MODEL.value,
+        onnx_intra_op_threads=_ONNX_INTRA_OP_THREADS.value,
+        onnx_inter_op_threads=_ONNX_INTER_OP_THREADS.value,
     )
     logging.info('Complete: call_variants.')
 

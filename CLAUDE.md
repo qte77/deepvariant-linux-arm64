@@ -313,9 +313,71 @@ INT8 matches or exceeds BF16 in all tested stratification regions. No localized 
 
 5. **fast_pipeline at 16 vCPU (DONE — SLOWER than sequential)** — Benchmarked on Graviton3 c7g.4xlarge with BF16. Run1: 696s, Run2: 689s, avg **~693s** — **42% slower than sequential 487s**. CV rate degraded from 0.232 to 0.290 s/100 (25% slower) due to CPU contention between concurrent ME+CV. fast_pipeline only benefits with 32+ vCPU where ME and CV can have dedicated CPU cores.
 
-6. **32 vCPU + fast_pipeline** (blocked on AWS limit increase to 64 vCPU) — The key remaining lever. At 32 vCPU, ME and CV each get ~16 effective cores, eliminating the contention problem. Expected: wall ≈ max(ME_32, CV_32) + PP ≈ 170-210s. Memory risk is backend-specific: BF16 (TF+OneDNN, ~15 GB RSS + ME ~10 GB) needs 64 GB; INT8 (ONNX, ~2-3 GB) fits in 32 GB.
+6. **Oracle A2 32-vCPU scaling (DONE)** — Tested on 16 OCPU (32 vCPU), 64 GB RAM, INT8 ONNX.
+   - **Test C (sequential, 32 shards):** ME 167s, CV 310s (0.358 s/100), PP 12s, wall **489s**. Cost: **$4.19/genome**.
+   - **Test D (sequential, 16 shards):** ME 297s, CV 312s (0.384 s/100), PP 16s, wall **629s**. Cost: $5.38/genome.
+   - **Test A (fast_pipeline, partitioned cores 0-15 ME, 16-31 CV):** ME ~437s, CV ~414s (0.489 s/100 with streaming stalls), PP **FAILS** (CVO ordering issue), wall 483s.
+   - **ME scales well:** 297s (16 shards) → 167s (32 shards), 1.78x with 2x shards.
+   - **CV does NOT scale beyond 16 threads:** INT8 ONNX rate 0.358 s/100 at both 16 and 32 threads. This is the bottleneck.
+   - **fast_pipeline verdict:** <1% wall improvement over sequential, PP broken, CV rate degrades with streaming stalls. **Not worth pursuing on Oracle A2.**
+   - **Best 32-vCPU config:** Sequential, 32 shards = **489s**.
+   - **Scaling efficiency:** Doubling vCPUs (16→32) gives 1.11x speedup (542→489s, 10%) — poor scaling because CV is the bottleneck.
 
-7. **SVE Smith-Waterman** (conditional on #6) — Only if 32 vCPU fast_pipeline shows ME > CV. High effort, defer until data confirms need.
+7. **Graviton3/4 32 vCPU** (blocked on AWS vCPU limit increase) — BF16 TF+OneDNN may scale better than INT8 ONNX at 32 threads. Needs c7g.8xlarge or c8g.8xlarge (64 GB).
+
+8. **SVE Smith-Waterman** (deferred) — Only relevant if ME becomes the bottleneck. Currently CV dominates.
+
+### 2.2e Phase 2E: Runtime Optimizations (inter-op done, jemalloc PRELIMINARY)
+
+**ONNX Inter-op Parallelism Sweep (Oracle A2 32-vCPU, INT8 ONNX) — NO IMPROVEMENT:**
+
+Tested whether splitting ORT threads into intra-op (GEMM parallelism within operators) + inter-op (parallelism between InceptionV3's parallel branches) improves throughput. Swept 6 configs:
+
+| Config | intra_op | inter_op | CV Rate (s/100) | vs Baseline |
+|--------|----------|----------|-----------------|-------------|
+| Baseline | 32 | 1 | 0.367 | — |
+| Best | 28 | 2 | 0.363 | -1.1% (noise) |
+| | 24 | 4 | 0.401 | +9.3% worse |
+| | 20 | 6 | 0.368 | +0.3% (same) |
+| | 16 | 8 | 0.410 | +11.7% worse |
+| | 16 | 16 | 0.397 | +8.2% worse |
+
+**Verdict:** Inter-op parallelism does not help InceptionV3. GEMM intra-op parallelism dominates — taking threads away from intra-op to give to inter-op hurts performance. Flags added to `call_variants.py` (`--onnx_intra_op_threads`, `--onnx_inter_op_threads`) but defaults remain optimal (all intra, 1 inter).
+
+**jemalloc (Oracle A2 32-vCPU, INT8 ONNX) — PRELIMINARY, NEEDS VERIFICATION:**
+
+Replaced glibc malloc with jemalloc via `LD_PRELOAD`. Isolated ME test and full pipeline test show different magnitude of improvement:
+
+| Test | Without jemalloc | With jemalloc | Improvement | Runs |
+|------|-----------------|---------------|-------------|------|
+| ME-only run 1 | 345.9s | 294.0s | -15.0% | 1 |
+| ME-only run 2 | 307.5s | 282.6s | -8.1% | 1 |
+| **ME-only avg** | **326.7s** | **288.3s** | **-11.8%** | **2** |
+| CV rate (full pipeline) | 0.371 s/100 | 0.342 s/100 | **-7.8%** | 1 each |
+| Full pipeline wall | 625s | 610s | -2.4% | 1 each |
+
+**Reconciliation issue:** ME improvement (~38s) + CV improvement (~29s from rate change) should give ~67s total improvement, but full pipeline only shows 15s (625→610s). Possible causes: (1) only 2 runs — run-to-run variance at this scale is ±20-30s, masking the signal; (2) jemalloc increases RSS, potentially increasing TLB pressure at 32 vCPU; (3) thermal/frequency state differences between isolated and full pipeline tests.
+
+**CV rate improvement is notable:** The 7.8% CV improvement was unexpected. ONNX Runtime has its own arena allocator for tensor memory, but still calls through to the system allocator for session-level allocations, operator registration, and intermediate C++ objects. The fact that glibc was measurably slow here suggests AmpereOne's quad-core cluster topology amplifies allocator inefficiency — jemalloc's per-thread arenas reduce cross-core cache invalidation on this specific architecture.
+
+**Projected impact on production config (16 OCPU, 16 shards — the $2.32/genome config):**
+If the ~10% blended improvement holds: 542s → ~488s → **~$2.09/genome** (projected, not measured).
+
+**Before committing jemalloc to Docker image:**
+1. Run 4+ repetitions (with and without) on the 16-OCPU 16-shard config to establish variance bounds
+2. Monitor RSS via `docker stats` — confirm jemalloc doesn't increase peak RSS above instance memory limits
+3. Test on Graviton3 — verify this is a universal ARM64 improvement, not AmpereOne-specific
+4. Only then add `LD_PRELOAD` to Docker image
+
+**How to test (zero code changes):**
+```bash
+# On host:
+apt-get install libjemalloc2
+
+# In Docker run command:
+-v /usr/lib/aarch64-linux-gnu/libjemalloc.so.2:/usr/lib/aarch64-linux-gnu/libjemalloc.so.2:ro \
+-e LD_PRELOAD=/usr/lib/aarch64-linux-gnu/libjemalloc.so.2
+```
 
 ### 2.3 EfficientNet-B3 Model (DEAD END)
 
@@ -340,7 +402,11 @@ INT8 matches or exceeds BF16 in all tested stratification regions. No localized 
 | Graviton4 INT8 ONNX (Neoverse V2) | **28% faster total** vs Graviton3 INT8 | **DONE** | 366s (0.197s/100), ME 194s — ~$3.33/genome |
 | Oracle A2 INT8 ONNX (AmpereOne) | **$2.32/genome** (cheapest) | **DONE** | 542s (0.358s/100); OneDNN SIGILL, needs Docker rebuild |
 | fast_pipeline at 16 vCPU | **42% SLOWER** (CPU contention) | **DONE** | 693s vs 487s sequential — needs 32+ vCPU |
-| Scaling to 32+ vCPU + fast_pipeline | Est. 170-210s chr20 | **BLOCKED** | AWS vCPU limit = 16 |
+| Oracle A2 32-vCPU sequential 32 shards | **489s** (10% faster than 16 vCPU) | **DONE** | ME scales (167s), CV doesn't scale beyond 16 threads |
+| Oracle A2 32-vCPU fast_pipeline | **<1% improvement, PP broken** | **DONE** | 483s wall, PP fails on CVO ordering — not worth pursuing |
+| Graviton3/4 32 vCPU BF16 | Est. ~300s chr20 | **BLOCKED** | AWS vCPU limit = 16 |
+| jemalloc (LD_PRELOAD) | ME -12%, CV -8% (preliminary) | **NEEDS VERIFICATION** | 2 runs only; reconciliation gap between isolated and full pipeline tests; needs 4+ runs on 16-OCPU config |
+| ONNX inter-op parallelism | **No improvement** | **DONE** | intra-op GEMM dominates; inter-op hurts |
 | KMP_AFFINITY + system allocator | **30% REGRESSION** | **REVERTED** | Do not re-attempt |
 | ~~EfficientNet-B3~~ | **3x SLOWER** | **DEAD END** | Depthwise separable conv penalty |
 | ~~MobileNetV2~~ | **Same architecture class** | **DEAD END** | Same depthwise conv penalty |
@@ -477,6 +543,9 @@ These optimizations were investigated on macOS and found to have zero impact. Th
 | **TF SavedModel on 32 GB machines** | **OOM kill** | TF allocates ~26 GB RSS for InceptionV3; forking postprocess pushes >32 GB → OOM. Use ONNX backend or 64+ GB instances |
 | **OneDNN+ACL on AmpereOne (Siryn)** | **SIGILL** | Docker image compiled for Neoverse-N1 uses instructions unavailable on AmpereOne. Use `TF_ENABLE_ONEDNN_OPTS=0` or rebuild image |
 | **ONNX on AmpereOne** | **1.96x slower than TF Eigen** | ONNX CPUExecutionProvider much worse than TF Eigen on AmpereOne (0.759 vs 0.387 s/100) — use TF Eigen fallback |
+| **fast_pipeline on Oracle A2 32-vCPU** | **<1% improvement, PP broken** | CV stalls on streaming, PP fails on CVO ordering. Sequential 32 shards (489s) is better than fast_pipeline (483s wall, no VCF) |
+| **INT8 ONNX CV scaling beyond 16 threads** | **No improvement** | 0.358 s/100 at 16 threads, 0.384 s/100 at 32 threads with 16 shards. ORT GEMM parallelism saturates at ~16 threads |
+| **ONNX inter-op parallelism (inter_op_threads > 1)** | **No improvement** | Tested intra/inter splits (28/2, 24/4, 20/6, 16/8, 16/16). All equal or worse than 32/1 baseline. InceptionV3 branches don't benefit from inter-op threading |
 
 ### What DOES Matter (Profile First)
 
@@ -549,9 +618,12 @@ Apple Silicon's unified memory makes CPU→GPU data transfer free. On Linux ARM6
 - [x] Graviton4 (c8g) benchmark: INT8 ONNX 366s (0.197s/100), ONNX FP32 602s, TF BF16 OOM on 32 GB
 - [x] Oracle A2 (AmpereOne) benchmark: INT8 ONNX 542s ($2.32/genome), TF Eigen 629s ($2.49/genome), BF16 SIGILL confirmed
 - [x] fast_pipeline on Linux ARM64: works but **42% SLOWER at 16 vCPU** (693s vs 487s sequential — CPU contention)
-- [ ] 32 vCPU + fast_pipeline (requires AWS vCPU limit increase to 64)
+- [x] Oracle A2 32-vCPU scaling: sequential 32 shards = 489s, fast_pipeline broken (PP fails)
+- [x] ONNX inter-op parallelism sweep: no improvement (intra-op GEMM dominates)
+- [x] jemalloc preliminary test: ME -12%, CV -8% (2 runs only, needs 4+ for verification)
+- [ ] jemalloc verification: 4+ runs on 16-OCPU config, RSS monitoring, Graviton3 cross-test
 - [ ] Graviton4 BF16 full pipeline on c8g.8xlarge (64 GB) — TF OOM on 32 GB
-- [ ] Oracle A2 alternative TF wheel testing or Docker rebuild for BF16
+- [ ] Oracle A2 ACL rebuild for AmpereOne BF16 (~$1.44/genome target)
 
 ### v0.3.0 — GPU/NPU Acceleration (Future, Optional)
 - [ ] Jetson Orin CUDA path working
@@ -582,12 +654,14 @@ Apple Silicon's unified memory makes CPU→GPU data transfer free. On Linux ARM6
 | **Oracle A2 TF Eigen FP32** | 16 OCPU | $0.32 | 10m29s | ~8.4 hr | **$2.49** | Measured (Eigen: OneDNN SIGILL on AmpereOne) |
 | Graviton3 fast_pipeline BF16 16 vCPU | 16 | $0.58 | 11m33s | ~9.3 hr | $5.37 | Measured — **42% SLOWER** (CPU contention) |
 | Graviton3 BF16 + fast_pipeline (projected) | 32 | $1.15 | ~3m30s | ~2.8 hr | ~$3.27 | Projected (32 vCPU eliminates contention) |
+| **Oracle A2 INT8 ONNX 32 shards** | 32 (16 OCPU) | $0.64 | 8m09s | ~6.5 hr | **$4.19** | Measured (sequential, 32 shards) |
+| Oracle A2 INT8 ONNX 16 shards | 32 (16 OCPU) | $0.64 | 10m29s | ~8.4 hr | $5.38 | Measured (sequential, 16 shards) |
 
 *Measured WGS times extrapolated from chr20 wall time × 48.1 (~15-20% uncertainty). INT8 matches BF16 speed on Graviton3 (no additional gain); INT8 is for non-BF16 platforms. fast_pipeline at 16 vCPU is slower due to CPU contention — needs 32+ vCPU.*
 
 *Graviton4 BF16 full pipeline OOM-killed on 32 GB (c8g.4xlarge). TF SavedModel uses ~26 GB RSS; forking postprocess pushes total >32 GB. Standalone CV rate measured at 0.328 s/100 (BF16). ME time (232s) taken from ONNX run. Needs c8g.8xlarge (64 GB) for full TF BF16 pipeline.*
 
-*Oracle A2 (AmpereOne/Siryn) uses TF Eigen fallback or ONNX because OneDNN+ACL (compiled for Neoverse-N1) causes SIGILL on AmpereOne's ISA. INT8 ONNX is the fastest working backend at $2.32/genome. A Docker image rebuild targeting AmpereOne would enable BF16 (AmpereOne has BF16+i8mm flags) and could reach ~$1.50/genome.*
+*Oracle A2 (AmpereOne/Siryn) uses TF Eigen fallback or ONNX because OneDNN+ACL (compiled for Neoverse-N1) causes SIGILL on AmpereOne's ISA. INT8 ONNX is the fastest working backend. 32-vCPU (16 OCPU) scaling: ME benefits from 32 shards (167s vs 297s), but INT8 ONNX CV does not scale beyond ~16 ORT threads (0.358 s/100 at both 16 and 32 threads). fast_pipeline tested on Oracle A2 32-vCPU: <1% wall improvement, PP broken (CVO ordering issue) — not worth pursuing.*
 
 ***
 

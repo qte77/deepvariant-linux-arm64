@@ -56,19 +56,23 @@ if [[ "${DV_AUTOCONFIG:-0}" == "1" ]]; then
   if [[ -x "${_AUTOCONFIG_SCRIPT}" ]]; then
     _ac_json=$("${_AUTOCONFIG_SCRIPT}" --json 2>/dev/null || true)
     if [[ -n "${_ac_json}" ]]; then
-      # Parse JSON and apply env vars that are not already set
-      # shellcheck disable=SC2154  # k,v are Python variables in the embedded script
-      eval "$(echo "${_ac_json}" | python3 -c "
+      # Parse JSON env vars. Output KEY=VALUE lines; only export if var is unset.
+      while IFS='=' read -r _ac_key _ac_val; do
+        [[ -z "${_ac_key}" ]] && continue
+        if [[ -z "${!_ac_key:-}" ]]; then
+          export "${_ac_key}=${_ac_val}"
+          echo "deepvariant: autoconfig set ${_ac_key}=${_ac_val}" >&2
+        fi
+      done < <(echo "${_ac_json}" | python3 -c "
 import sys, json
 try:
-    cfg = json.load(sys.stdin)
-    env = cfg.get('env', {})
+    env = json.load(sys.stdin).get('env', {})
     for k, v in env.items():
         if v is not None:
-            print(f'[[ -z \"\${{${k}:-}}\" ]] && export {k}=\"{v}\" && echo \"deepvariant: autoconfig set {k}={v}\" >&2')
+            print(f'{k}={v}')
 except Exception:
     pass
-" 2>/dev/null || true)"
+" 2>/dev/null || true)
       _ac_cpu=$(echo "${_ac_json}" | python3 -c "import sys,json; print(json.load(sys.stdin).get('cpu_family',''))" 2>/dev/null || true)
       _ac_backend=$(echo "${_ac_json}" | python3 -c "import sys,json; print(json.load(sys.stdin).get('backend',''))" 2>/dev/null || true)
       echo "deepvariant: autoconfig applied (${_ac_backend} on ${_ac_cpu})" >&2

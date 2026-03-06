@@ -52,7 +52,7 @@ fi
 # Enable: docker run -e DV_AUTOCONFIG=1 ...
 # User-provided env vars always win — autoconfig only sets vars not already set.
 if [[ "${DV_AUTOCONFIG:-0}" == "1" ]]; then
-  _AUTOCONFIG_SCRIPT="$(dirname "$0")/autoconfig.sh"
+  _AUTOCONFIG_SCRIPT="/opt/deepvariant/scripts/autoconfig.sh"
   if [[ -x "${_AUTOCONFIG_SCRIPT}" ]]; then
     _ac_json=$("${_AUTOCONFIG_SCRIPT}" --json 2>/dev/null || true)
     if [[ -n "${_ac_json}" ]]; then

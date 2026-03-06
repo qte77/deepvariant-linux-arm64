@@ -166,29 +166,64 @@ echo "=== Step 1/3: make_examples ==="
 EXAMPLES="${INTERMEDIATE_RESULTS_DIR}/make_examples.tfrecord@${NUM_SHARDS}.gz"
 SMALL_MODEL_CVO="${INTERMEDIATE_RESULTS_DIR}/make_examples_call_variant_outputs.tfrecord@${NUM_SHARDS}.gz"
 
-ME_CMD=("/opt/deepvariant/bin/make_examples"
-  "--mode=calling"
-  "--ref=$REF"
-  "--reads=$READS"
-  "--examples=$EXAMPLES"
-  "--checkpoint=$MODEL_CKPT"
+# Build make_examples command. Uses GNU parallel to launch NUM_SHARDS workers,
+# each handling one shard (--task N). This matches how run_deepvariant.py works.
+ME_BASE_ARGS=(
+  "--mode" "calling"
+  "--ref" "$REF"
+  "--reads" "$READS"
+  "--examples" "$EXAMPLES"
+  "--checkpoint" "$MODEL_CKPT"
 )
 if [[ -n "$REGIONS" ]]; then
-  ME_CMD+=("--regions=$REGIONS")
+  ME_BASE_ARGS+=("--regions" "$REGIONS")
 fi
 if [[ -n "$SAMPLE_NAME" ]]; then
-  ME_CMD+=("--sample_name=$SAMPLE_NAME")
+  ME_BASE_ARGS+=("--sample_name" "$SAMPLE_NAME")
 fi
 if [[ -n "$OUTPUT_GVCF" ]]; then
   GVCF_TFRECORD="${INTERMEDIATE_RESULTS_DIR}/gvcf.tfrecord@${NUM_SHARDS}.gz"
-  ME_CMD+=("--gvcf=$GVCF_TFRECORD")
+  ME_BASE_ARGS+=("--gvcf" "$GVCF_TFRECORD")
 fi
+
+# Small model config — WGS, PACBIO, ONT_R104 use small models for filtering.
+# This creates make_examples_call_variant_outputs.tfrecord@N.gz files that
+# postprocess_variants needs via --small_model_cvo_records.
+USE_SMALL_MODEL=false
+case "$MODEL_TYPE" in
+  WGS)
+    USE_SMALL_MODEL=true
+    ME_BASE_ARGS+=("--call_small_model_examples=true"
+                   "--trained_small_model_path=/opt/smallmodels/wgs"
+                   "--track_ref_reads=true"
+                   "--small_model_snp_gq_threshold=20"
+                   "--small_model_indel_gq_threshold=28"
+                   "--small_model_vaf_context_window_size=51") ;;
+  PACBIO)
+    USE_SMALL_MODEL=true
+    ME_BASE_ARGS+=("--call_small_model_examples=true"
+                   "--trained_small_model_path=/opt/smallmodels/pacbio"
+                   "--track_ref_reads=true"
+                   "--small_model_snp_gq_threshold=15"
+                   "--small_model_indel_gq_threshold=16"
+                   "--small_model_vaf_context_window_size=51") ;;
+  ONT_R104)
+    USE_SMALL_MODEL=true
+    ME_BASE_ARGS+=("--call_small_model_examples=true"
+                   "--trained_small_model_path=/opt/smallmodels/ont_r104"
+                   "--track_ref_reads=true"
+                   "--small_model_snp_gq_threshold=9"
+                   "--small_model_indel_gq_threshold=17"
+                   "--small_model_vaf_context_window_size=51") ;;
+esac
 
 # Strip OMP vars for make_examples (they cause ~10% regression)
 unset OMP_NUM_THREADS OMP_PROC_BIND OMP_PLACES 2>/dev/null || true
 
 ME_START=$(date +%s)
-"${ME_CMD[@]}"
+seq 0 $((NUM_SHARDS - 1)) | \
+  parallel -q --halt 2 --line-buffer \
+  /opt/deepvariant/bin/make_examples "${ME_BASE_ARGS[@]}" --task {}
 ME_END=$(date +%s)
 ME_TIME=$((ME_END - ME_START))
 echo "make_examples: ${ME_TIME}s"
@@ -281,8 +316,10 @@ PP_CMD=("/opt/deepvariant/bin/postprocess_variants"
   "--infile=$CV_MERGED"
   "--outfile=$OUTPUT_VCF"
   "--cpus=$PP_CPUS"
-  "--small_model_cvo_records=$SMALL_MODEL_CVO"
 )
+if [[ "$USE_SMALL_MODEL" == "true" ]]; then
+  PP_CMD+=("--small_model_cvo_records=$SMALL_MODEL_CVO")
+fi
 if [[ -n "$REGIONS" ]]; then
   PP_CMD+=("--regions=$REGIONS")
 fi

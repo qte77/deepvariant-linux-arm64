@@ -644,22 +644,22 @@ Apple Silicon's unified memory makes CPU→GPU data transfer free. On Linux ARM6
 | Platform | vCPU | $/hr | chr20 Time | WGS Time | Cost/Genome | Source |
 |----------|------|------|-----------|----------|-------------|--------|
 | Google x86 (official) | 96 | $3.81 | — | ~1.3 hr | **$5.01** | [Official](https://github.com/google/deepvariant/blob/r1.9/docs/metrics.md) |
-| **Graviton3 FP32** | 16 | $0.58 | 9m41s | ~7.8 hr | **$4.50** | Measured |
-| **Graviton3 BF16** | 16 | $0.58 | 8m06s | ~6.5 hr | **$3.76** | Measured |
+| **Graviton3 FP32** | 16 | $0.58 | 9m41s | ~7.8 hr | **$4.50** | Measured (2-run avg 582s)* |
+| **Graviton3 BF16** | 16 | $0.58 | 8m06s | ~6.5 hr | **$3.77** | Measured (2-run avg 487s)* |
 | **Graviton3 INT8 ONNX** | 16 | $0.58 | ~8m27s | ~6.8 hr | **$3.92** | Measured (3-run avg 507s) |
-| **Graviton4 INT8 ONNX** | 16 | $0.68 | 6m06s | ~4.9 hr | **$3.33** | Measured (2-run avg 366s) |
-| **Graviton4 ONNX FP32** | 16 | $0.68 | 10m02s | ~8.0 hr | **$5.07** | Measured (ONNX due to TF OOM on 32 GB) |
-| **Graviton4 BF16** (standalone CV) | 16 | $0.68 | ~8m32s* | ~6.8 hr | ~**$4.31** | Partial (CV measured, ME from ONNX run) |
+| **Graviton4 INT8 ONNX** | 16 | $0.68 | 6m06s | ~4.9 hr | **$3.33** | Measured (2-run avg 366s)* |
+| **Graviton4 ONNX FP32** | 16 | $0.68 | 10m02s | ~8.0 hr | **$5.07** | Measured (2-run avg 602s)* |
+| **Graviton4 BF16** (standalone CV) | 16 | $0.68 | ~8m32s | ~6.8 hr | ~**$4.31** | Partial (CV measured, ME from ONNX run)* |
 | **Oracle A2 INT8 ONNX** | 16 OCPU | $0.32 | 9m44s | ~7.8 hr | **$2.49** | Measured (4-run avg 584s, OneDNN OFF) |
-| **Oracle A2 TF Eigen FP32** | 16 OCPU | $0.32 | 10m29s | ~8.4 hr | **$2.49** | Measured (Eigen: OneDNN SIGILL on AmpereOne) |
-| **Graviton3 INT8 ONNX + jemalloc** | 16 | $0.58 | 7m23s | ~5.9 hr | **$3.43** | Measured (2-run avg 443s, jemalloc ON) |
+| **Oracle A2 TF Eigen FP32** | 16 OCPU | $0.32 | 10m29s | ~8.4 hr | **$2.69** | Measured (2-run avg 629s, Eigen: OneDNN SIGILL)* |
+| **Graviton3 BF16 + jemalloc** | 16 | $0.58 | 7m23s | ~5.9 hr | **$3.43** | Measured (2-run avg 443s, jemalloc ON)* |
 | **Oracle A2 INT8 + jemalloc** | 16 OCPU | $0.32 | 9m04s | ~7.3 hr | **$2.32** | Measured (4-run avg 544s, OneDNN OFF) |
-| Graviton3 fast_pipeline BF16 16 vCPU | 16 | $0.58 | 11m33s | ~9.3 hr | $5.37 | Measured — **42% SLOWER** (CPU contention) |
+| Graviton3 fast_pipeline BF16 16 vCPU | 16 | $0.58 | 11m33s | ~9.3 hr | $5.37 | Measured (2-run avg 693s)* — **42% SLOWER** |
 | Graviton3 BF16 + fast_pipeline (projected) | 32 | $1.15 | ~3m30s | ~2.8 hr | ~$3.27 | Projected (32 vCPU eliminates contention) |
 | **Oracle A2 INT8 ONNX 32 shards** | 32 (16 OCPU) | $0.64 | 8m09s | ~6.5 hr | **$4.19** | Measured (sequential, 32 shards) |
 | Oracle A2 INT8 ONNX 16 shards | 32 (16 OCPU) | $0.64 | 10m29s | ~8.4 hr | $5.38 | Measured (sequential, 16 shards) |
 
-*All $/genome use formula: `chr20_wall_s × 48.1 / 3600 × $/hr`. Measured values averaged over N runs (N noted in Source column). Projected values marked with ~. WGS time extrapolation has ~15-20% uncertainty. INT8 matches BF16 speed on Graviton3 (no additional gain); INT8 is for non-BF16 platforms. fast_pipeline at 16 vCPU is slower due to CPU contention — needs 32+ vCPU.*
+*All $/genome use formula: `chr20_wall_s × 48.1 / 3600 × $/hr`. Measured values averaged over N runs (N noted in Source column). Rows marked with \* have N<4 runs (wider confidence interval). Projected values marked with ~. WGS time extrapolation has ~15-20% uncertainty. Wall time includes ~4-5s Docker startup/inter-stage overhead beyond ME+CV+PP sum. INT8 matches BF16 speed on Graviton3 (no additional gain); INT8 is for non-BF16 platforms. fast_pipeline at 16 vCPU is slower due to CPU contention — needs 32+ vCPU.*
 
 *Graviton4 BF16 full pipeline OOM-killed on 32 GB (c8g.4xlarge). TF SavedModel uses ~26 GB RSS; forking postprocess pushes total >32 GB. Standalone CV rate measured at 0.328 s/100 (BF16). ME time (232s) taken from ONNX run. Needs c8g.8xlarge (64 GB) for full TF BF16 pipeline.*
 

@@ -17,11 +17,13 @@ ARM64 cloud instances are 25-50% cheaper per vCPU than x86 equivalents. This for
 | Google DeepVariant x86 (96 vCPU) | ~1.3 hr | ~$5.01 | Open source |
 | Sentieon DNAscope (Graviton) | ~1-2 hr | ~$2-4 + **per-sample license** | Proprietary |
 | NVIDIA Parabricks (GPU) | 8-16 min | <$2 + **license** | Proprietary |
-| **This fork (16 vCPU Graviton3, BF16)** | **~6.5 hr** | **~$3.76** | **Open source** |
+| **This fork (16 vCPU Graviton3, BF16)** | **~6.5 hr** | **~$3.77** | **Open source** |
 | **This fork (16 vCPU Graviton4, INT8)** | **~4.9 hr** | **~$3.33** | **Open source** |
-| **This fork (16 OCPU Oracle A2, INT8)** | **~7.2 hr** | **~$2.32** | **Open source** |
+| **This fork (16 OCPU Oracle A2, INT8)** | **~7.3 hr** | **~$2.32†** | **Open source** |
 
-> **Already cheaper than Google's x86 reference** — Oracle A2 INT8 at $2.32/genome, Graviton3 BF16 at $3.76/genome (vs $5.01). With scaling to 32+ vCPU and fast_pipeline, targeting ~2.5 hr at ~$3/genome on Graviton. Oracle A2 with a rebuilt Docker image (enabling BF16) could push below $2/genome.
+> †Oracle A2 $2.32/genome with jemalloc enabled (`-e DV_USE_JEMALLOC=1`); baseline without jemalloc is $2.49/genome.
+
+> **Already cheaper than Google's x86 reference** — Oracle A2 INT8 at $2.32/genome (with jemalloc), Graviton3 BF16 at $3.77/genome (vs $5.01). With scaling to 32+ vCPU and fast_pipeline, targeting ~2.5 hr at ~$3/genome on Graviton. Oracle A2 with a rebuilt Docker image (enabling BF16) could push below $2/genome.
 
 **Use this fork when** you want open-source DeepVariant on ARM64, or you are cost-sensitive and can tolerate longer runtimes (batch processing, research pipelines). **Use GPU-accelerated DeepVariant** when you need fast turnaround.
 
@@ -43,7 +45,7 @@ All benchmarks: GIAB HG003, full chr20, accuracy validated with `rtg vcfeval`. G
 | **AWS Graviton4** | **16** | **INT8 ONNX** | **0.197 s/100** | **6m06s** |
 | AWS Graviton4 | 16 | ONNX FP32 | 0.446 s/100 | 10m02s |
 | AWS Graviton4 | 16 | BF16 (standalone CV) | 0.328 s/100 | ~8m32s* |
-| **Oracle A2 (AmpereOne)** | **16 OCPU** | **INT8 ONNX** | **0.358 s/100** | **9m02s** |
+| **Oracle A2 (AmpereOne)** | **16 OCPU** | **INT8 ONNX** | **0.389 s/100** | **9m44s** |
 | Oracle A2 (AmpereOne) | 16 OCPU | TF Eigen FP32 | 0.387 s/100 | 10m29s |
 
 BF16 and INT8 achieve nearly identical call_variants rates on Graviton3. INT8 is the better choice on platforms **without** BF16 support (Neoverse-N1, Ampere Altra), where it provides a 2.3x speedup over FP32 ONNX (isolated benchmark: 0.225 s/100 vs 0.517 s/100).
@@ -65,16 +67,20 @@ BF16 and INT8 achieve nearly identical call_variants rates on Graviton3. INT8 is
 
 **Cross-platform comparison (16 vCPU, best available backend):**
 
-| Platform | Backend | ME | CV (rate) | PP | Total | $/hr | $/genome |
-|----------|---------|-----|-----------|-----|-------|------|----------|
-| Graviton3 (c7g) | BF16 | 278s | 185s (0.232) | 24s | **487s** | $0.58 | **$3.76** |
-| Graviton3 (c7g) | INT8 ONNX | 299s | 194s (0.237) | 14s | **507s** | $0.58 | **$3.92** |
-| **Graviton4 (c8g)** | **INT8 ONNX** | **194s** | **158s (0.197)** | **6s** | **366s** | **$0.68** | **$3.33** |
-| Graviton4 (c8g) | ONNX FP32 | 232s | 360s (0.446) | 10s | **602s** | $0.68 | $5.07 |
-| **Oracle A2 (AmpereOne)** | **INT8 ONNX** | **280s** | **245s (0.358)** | **17s** | **542s** | **$0.32** | **$2.32** |
-| Oracle A2 (AmpereOne) | TF Eigen FP32 | 287s | 325s (0.387) | 17s | **629s** | $0.32 | $2.49 |
+| Platform | Backend | jemalloc | ME | CV (rate) | PP | Total | $/hr | $/genome | N |
+|----------|---------|----------|-----|-----------|-----|-------|------|----------|---|
+| Graviton3 (c7g) | BF16 | off | 278s | 185s (0.232) | 24s | **487s** | $0.58 | **$3.77** | 2* |
+| Graviton3 (c7g) | BF16 | **on** | 242s | 188s (0.235) | 9s | **443s** | $0.58 | **$3.43** | 2* |
+| Graviton3 (c7g) | INT8 ONNX | off | 299s | 194s (0.237) | 14s | **507s** | $0.58 | **$3.92** | 3 |
+| **Graviton4 (c8g)** | **INT8 ONNX** | **off** | **194s** | **158s (0.197)** | **6s** | **366s** | **$0.68** | **$3.33** | 2* |
+| Graviton4 (c8g) | ONNX FP32 | off | 232s | 360s (0.446) | 10s | **602s** | $0.68 | $5.07 | 2* |
+| **Oracle A2 (AmpereOne)** | **INT8 ONNX** | **off** | **253s** | **315s (0.389)** | **11s** | **584s** | **$0.32** | **$2.49** | **4** |
+| **Oracle A2 (AmpereOne)** | **INT8 ONNX** | **on** | **210s** | **318s (0.393)** | **12s** | **544s** | **$0.32** | **$2.32** | **4** |
+| Oracle A2 (AmpereOne) | TF Eigen FP32 | off | 287s | 325s (0.387) | 17s | **629s** | $0.32 | $2.69 | 2* |
 
-> Graviton4 INT8 ONNX is the fastest ARM64 configuration. Oracle A2 INT8 ONNX is the cheapest at $2.32/genome. Graviton4 TF BF16 OOM-killed on 32 GB — needs 64 GB instance. Oracle A2 OneDNN SIGILL — needs Docker rebuild for BF16. Both platforms have headroom for improvement.
+> *N<4 runs; wider confidence interval. Wall time includes ~4-5s Docker startup and inter-stage overhead not captured in individual ME/CV/PP timings. All $/genome use formula: `chr20_wall_s × 48.1 / 3600 × $/hr`. jemalloc: enable with `-e DV_USE_JEMALLOC=1` (verified 14-17% ME, ~0% CV improvement; see `scripts/benchmark_jemalloc_ablation.sh`).
+
+> Graviton4 INT8 ONNX is the fastest ARM64 configuration. Oracle A2 INT8 ONNX + jemalloc is the cheapest at $2.32/genome. Graviton4 TF BF16 OOM-killed on 32 GB — needs 64 GB instance. Oracle A2 OneDNN SIGILL — needs Docker rebuild for BF16. Both platforms have headroom for improvement.
 
 ### Accuracy
 
@@ -158,6 +164,23 @@ docker run -e DV_USE_JEMALLOC=1 ...
 To use a custom jemalloc path: `-e DV_JEMALLOC_PATH=/path/to/libjemalloc.so`.
 
 Benchmark data: see `scripts/benchmark_jemalloc_ablation.sh`.
+
+### Auto-configure for your ARM64 CPU
+
+Not sure which backend to use? Run autoconfig to get a recommended configuration:
+
+```bash
+docker run --rm ghcr.io/antomicblitz/deepvariant-arm64:optimized \
+  bash /opt/deepvariant/scripts/autoconfig.sh
+```
+
+Or enable automatic configuration for every run:
+
+```bash
+docker run -e DV_AUTOCONFIG=1 ...
+```
+
+Autoconfig detects your CPU (Graviton3/4, AmpereOne, Neoverse-N1) and selects the optimal backend, thread counts, and safety settings automatically. User-provided environment variables always take precedence.
 
 ---
 

@@ -405,7 +405,7 @@ apt-get install libjemalloc2
 | Oracle A2 32-vCPU sequential 32 shards | **489s** (10% faster than 16 vCPU) | **DONE** | ME scales (167s), CV doesn't scale beyond 16 threads |
 | Oracle A2 32-vCPU fast_pipeline | **<1% improvement, PP broken** | **DONE** | 483s wall, PP fails on CVO ordering — not worth pursuing |
 | Graviton3/4 32 vCPU BF16 | Est. ~300s chr20 | **BLOCKED** | AWS vCPU limit = 16 |
-| jemalloc (LD_PRELOAD) | ME -12%, CV -8% (preliminary) | **NEEDS VERIFICATION** | 2 runs only; reconciliation gap between isolated and full pipeline tests; needs 4+ runs on 16-OCPU config |
+| jemalloc (`DV_USE_JEMALLOC=1`) | **ME -14-17%, CV ~0%, Wall -7-9%** | **VERIFIED** | Graviton3: 487→443s (2 runs). Oracle A2: 584→544s (4 runs). Universal ARM64 benefit. |
 | ONNX inter-op parallelism | **No improvement** | **DONE** | intra-op GEMM dominates; inter-op hurts |
 | KMP_AFFINITY + system allocator | **30% REGRESSION** | **REVERTED** | Do not re-attempt |
 | ~~EfficientNet-B3~~ | **3x SLOWER** | **DEAD END** | Depthwise separable conv penalty |
@@ -650,8 +650,10 @@ Apple Silicon's unified memory makes CPU→GPU data transfer free. On Linux ARM6
 | **Graviton4 INT8 ONNX** | 16 | $0.68 | 6m06s | ~4.9 hr | **$3.33** | Measured (2-run avg 366s) |
 | **Graviton4 ONNX FP32** | 16 | $0.68 | 10m02s | ~8.0 hr | **$5.07** | Measured (ONNX due to TF OOM on 32 GB) |
 | **Graviton4 BF16** (standalone CV) | 16 | $0.68 | ~8m32s* | ~6.8 hr | ~**$4.31** | Partial (CV measured, ME from ONNX run) |
-| **Oracle A2 INT8 ONNX** | 16 OCPU | $0.32 | 9m02s | ~7.2 hr | **$2.32** | Measured (2-run avg 542s) |
+| **Oracle A2 INT8 ONNX** | 16 OCPU | $0.32 | 9m44s | ~7.8 hr | **$2.49** | Measured (4-run avg 584s, OneDNN OFF) |
 | **Oracle A2 TF Eigen FP32** | 16 OCPU | $0.32 | 10m29s | ~8.4 hr | **$2.49** | Measured (Eigen: OneDNN SIGILL on AmpereOne) |
+| **Graviton3 INT8 ONNX + jemalloc** | 16 | $0.58 | 7m23s | ~5.9 hr | **$3.43** | Measured (2-run avg 443s, jemalloc ON) |
+| **Oracle A2 INT8 + jemalloc** | 16 OCPU | $0.32 | 9m04s | ~7.3 hr | **$2.32** | Measured (4-run avg 544s, OneDNN OFF) |
 | Graviton3 fast_pipeline BF16 16 vCPU | 16 | $0.58 | 11m33s | ~9.3 hr | $5.37 | Measured — **42% SLOWER** (CPU contention) |
 | Graviton3 BF16 + fast_pipeline (projected) | 32 | $1.15 | ~3m30s | ~2.8 hr | ~$3.27 | Projected (32 vCPU eliminates contention) |
 | **Oracle A2 INT8 ONNX 32 shards** | 32 (16 OCPU) | $0.64 | 8m09s | ~6.5 hr | **$4.19** | Measured (sequential, 32 shards) |
@@ -662,6 +664,8 @@ Apple Silicon's unified memory makes CPU→GPU data transfer free. On Linux ARM6
 *Graviton4 BF16 full pipeline OOM-killed on 32 GB (c8g.4xlarge). TF SavedModel uses ~26 GB RSS; forking postprocess pushes total >32 GB. Standalone CV rate measured at 0.328 s/100 (BF16). ME time (232s) taken from ONNX run. Needs c8g.8xlarge (64 GB) for full TF BF16 pipeline.*
 
 *Oracle A2 (AmpereOne/Siryn) uses TF Eigen fallback or ONNX because OneDNN+ACL (compiled for Neoverse-N1) causes SIGILL on AmpereOne's ISA. INT8 ONNX is the fastest working backend. 32-vCPU (16 OCPU) scaling: ME benefits from 32 shards (167s vs 297s), but INT8 ONNX CV does not scale beyond ~16 ORT threads (0.358 s/100 at both 16 and 32 threads). fast_pipeline tested on Oracle A2 32-vCPU: <1% wall improvement, PP broken (CVO ordering issue) — not worth pursuing.*
+
+*jemalloc (via `DV_USE_JEMALLOC=1`): Verified benefit on both ARM64 platforms. Graviton3: ME -13.8%, CV -3.2%, wall -9.0% (2 runs each). Oracle A2: ME -17.0%, CV within noise, wall -6.9% (4 runs each). ME improvement is the dominant factor (jemalloc's per-thread arenas reduce malloc contention in make_examples' C++ allocations). CV improvement is small/zero — ONNX Runtime and TF have their own internal allocators that bypass glibc malloc.*
 
 ***
 

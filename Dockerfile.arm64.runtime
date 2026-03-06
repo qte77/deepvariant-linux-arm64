@@ -213,7 +213,7 @@ RUN chmod -R +r /opt/smallmodels/ont_r104/*
 ENV PATH="${PATH}":/opt/conda/bin:/opt/conda/envs/bio/bin:/opt/deepvariant/bin
 
 RUN apt-get -y update && \
-  apt-get install -y parallel python3-pip && \
+  apt-get install -y parallel python3-pip libjemalloc2 && \
   PATH="${HOME}/.local/bin:$PATH" python3 -m pip install absl-py==0.13.0 && \
   apt-get clean autoclean && \
   apt-get autoremove -y --purge && \

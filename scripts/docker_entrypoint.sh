@@ -23,4 +23,18 @@ if [[ -z "${DNNL_DEFAULT_FPMATH_MODE:-}" ]] && grep -q bf16 /proc/cpuinfo 2>/dev
   export DNNL_DEFAULT_FPMATH_MODE=BF16
 fi
 
+# Optional jemalloc allocator — reduces malloc contention under many concurrent
+# shards. Preliminary testing shows ME and CV improvements on AmpereOne.
+# Enable: docker run -e DV_USE_JEMALLOC=1 ...
+# Override path: docker run -e DV_JEMALLOC_PATH=/custom/path/libjemalloc.so ...
+if [[ "${DV_USE_JEMALLOC:-0}" == "1" ]]; then
+  _JEMALLOC="${DV_JEMALLOC_PATH:-/usr/lib/aarch64-linux-gnu/libjemalloc.so.2}"
+  if [[ -f "${_JEMALLOC}" ]]; then
+    export LD_PRELOAD="${_JEMALLOC}${LD_PRELOAD:+:$LD_PRELOAD}"
+    echo "deepvariant: jemalloc enabled (${_JEMALLOC})" >&2
+  else
+    echo "deepvariant: WARNING: DV_USE_JEMALLOC=1 but ${_JEMALLOC} not found, continuing without jemalloc" >&2
+  fi
+fi
+
 exec "$@"

@@ -15,6 +15,122 @@ At [UK Biobank](https://doi.org/10.1038/s41586-025-09272-9) scale (490,640 genom
 
 ---
 
+## Quick Start
+
+**Requirements:** ARM64 Linux + Docker.
+
+```bash
+docker pull ghcr.io/antomicblitz/deepvariant-arm64:v1.9.0-arm64.5
+
+# DV_AUTOCONFIG=1 detects your CPU and selects the optimal backend automatically.
+# Parallel CV splits inference across 4 workers for 1.7-2.5x speedup.
+docker run \
+  -v /path/to/data:/data \
+  --memory=56g \
+  -e DV_AUTOCONFIG=1 \
+  -e DV_USE_JEMALLOC=1 \
+  ghcr.io/antomicblitz/deepvariant-arm64:v1.9.0-arm64.5 \
+  /opt/deepvariant/scripts/run_parallel_cv.sh \
+  --model_type=WGS \
+  --ref=/data/reference.fasta \
+  --reads=/data/input.bam \
+  --output_vcf=/data/output.vcf.gz \
+  --num_shards=$(nproc) \
+  --num_cv_workers=4
+```
+
+`DV_AUTOCONFIG=1` detects Graviton3/4, AmpereOne, and Neoverse-N1/N2, and applies the right backend, thread counts, and safety settings. User-provided env vars always take precedence. On non-BF16 platforms (Oracle A1, A2, Hetzner CAX), autoconfig automatically uses the **pre-installed INT8 ONNX model** (`/opt/models/wgs/model_int8_static.onnx`, 21 MB) — no manual quantization needed. `--num_shards` must be divisible by `--num_cv_workers`.
+
+<details>
+<summary>Manual backend override (BF16 or custom INT8)</summary>
+
+#### BF16 (Graviton3+, 38% faster CV)
+
+```bash
+docker run -v /path/to/data:/data --memory=28g \
+  -e TF_ENABLE_ONEDNN_OPTS=1 -e ONEDNN_DEFAULT_FPMATH_MODE=BF16 \
+  -e OMP_NUM_THREADS=$(nproc) -e OMP_PROC_BIND=false -e OMP_PLACES=cores \
+  ghcr.io/antomicblitz/deepvariant-arm64:v1.9.0-arm64.5 \
+  /opt/deepvariant/bin/run_deepvariant \
+  --model_type=WGS --ref=/data/reference.fasta --reads=/data/input.bam \
+  --output_vcf=/data/output.vcf.gz --num_shards=$(nproc) \
+  --call_variants_extra_args="--batch_size=256"
+```
+
+#### Custom INT8 quantization (WES, PacBio, or your own calibration data)
+
+The Docker image ships with a pre-quantized WGS INT8 model. To quantize a different model:
+
+```bash
+# Step 1: Run the pipeline to generate calibration TFRecords
+docker run -v /path/to/data:/data --memory=28g \
+  ghcr.io/antomicblitz/deepvariant-arm64:v1.9.0-arm64.5 \
+  /opt/deepvariant/bin/run_deepvariant \
+  --model_type=WGS --ref=/data/reference.fasta --reads=/data/input.bam \
+  --output_vcf=/data/output.vcf.gz --num_shards=$(nproc) \
+  --intermediate_results_dir=/data/intermediate
+
+# Step 2: Quantize (one-time, ~2 min)
+docker run -v /path/to/data:/data \
+  ghcr.io/antomicblitz/deepvariant-arm64:v1.9.0-arm64.5 \
+  quantize_model \
+  --input /opt/models/wgs/model.onnx \
+  --output /data/model_int8_custom.onnx \
+  --tfrecord_dir /data/intermediate/make_examples \
+  --saved_model_dir /opt/models/wgs
+
+# Step 3: Use the custom INT8 model
+docker run -v /path/to/data:/data --memory=28g \
+  ghcr.io/antomicblitz/deepvariant-arm64:v1.9.0-arm64.5 \
+  /opt/deepvariant/bin/run_deepvariant \
+  --model_type=WGS --ref=/data/reference.fasta --reads=/data/input.bam \
+  --output_vcf=/data/output.vcf.gz --num_shards=$(nproc) \
+  --call_variants_extra_args="--batch_size=256,--use_onnx=true,--onnx_model=/data/model_int8_custom.onnx"
+```
+
+</details>
+
+On NVMe or tmpfs storage, add `--nocompress_intermediates` to skip gzip on TFRecord intermediates (~4% faster ME, ~12 GB disk for chr20).
+
+<details>
+<summary>Sequential mode (simpler, no parallel CV)</summary>
+
+```bash
+docker run -v /path/to/data:/data --memory=28g \
+  -e DV_AUTOCONFIG=1 -e DV_USE_JEMALLOC=1 \
+  ghcr.io/antomicblitz/deepvariant-arm64:v1.9.0-arm64.5 \
+  /opt/deepvariant/bin/run_deepvariant \
+  --model_type=WGS --ref=/data/reference.fasta --reads=/data/input.bam \
+  --output_vcf=/data/output.vcf.gz --num_shards=$(nproc) \
+  --call_variants_extra_args="--batch_size=256"
+```
+
+</details>
+
+<details>
+<summary>All run_parallel_cv.sh options</summary>
+
+| Flag | Required | Default | Description |
+|------|----------|---------|-------------|
+| `--model_type` | Yes | -- | WGS, WES, PACBIO, ONT_R104, etc. |
+| `--ref` | Yes | -- | Reference FASTA |
+| `--reads` | Yes | -- | Input BAM/CRAM |
+| `--output_vcf` | Yes | -- | Output VCF |
+| `--num_shards` | Yes | -- | make_examples shards |
+| `--num_cv_workers` | No | 4 | Parallel CV workers |
+| `--regions` | No | -- | Genomic region (e.g., chr20) |
+| `--batch_size` | No | 256 | CV batch size |
+| `--onnx_model` | No | auto | Custom ONNX model path |
+| `--customized_model` | No | -- | Custom checkpoint |
+| `--sample_name` | No | -- | VCF header sample name |
+| `--output_gvcf` | No | -- | gVCF output path |
+| `--postprocess_cpus` | No | num_shards | CPUs for postprocess |
+| `--intermediate_results_dir` | No | tmpdir | Working directory |
+
+</details>
+
+---
+
 ## What this project actually contributes
 
 There are four distinct results here, with different levels of novelty.
@@ -148,119 +264,6 @@ At 16+ threads, InceptionV3 GEMM saturates and more threads yield no speedup. `r
 | **Oracle A2** (16 OCPU) | 32 | 282s | **114s** | **2.47x** | **~$2.14** | 2* |
 
 > ONNX backend only (~3 GB/worker). TF SavedModel uses ~26 GB RSS per worker — use ONNX or 64+ GB instances for TF.
-
----
-
-## Quick Start
-
-**Requirements:** ARM64 Linux + Docker.
-
-```bash
-docker pull ghcr.io/antomicblitz/deepvariant-arm64:v1.9.0-arm64.5
-
-# DV_AUTOCONFIG=1 detects your CPU and selects the optimal backend automatically.
-# --memory=28g prevents TF from grabbing all available RAM.
-docker run \
-  -v /path/to/data:/data \
-  --memory=28g \
-  -e DV_AUTOCONFIG=1 \
-  -e DV_USE_JEMALLOC=1 \
-  ghcr.io/antomicblitz/deepvariant-arm64:v1.9.0-arm64.5 \
-  /opt/deepvariant/bin/run_deepvariant \
-  --model_type=WGS \
-  --ref=/data/reference.fasta \
-  --reads=/data/input.bam \
-  --output_vcf=/data/output.vcf.gz \
-  --num_shards=$(nproc) \
-  --call_variants_extra_args="--batch_size=256"
-```
-
-`DV_AUTOCONFIG=1` detects Graviton3/4, AmpereOne, and Neoverse-N1/N2, and applies the right backend, thread counts, and safety settings. User-provided env vars always take precedence. On non-BF16 platforms (Oracle A1, A2, Hetzner CAX), autoconfig automatically uses the **pre-installed INT8 ONNX model** (`/opt/models/wgs/model_int8_static.onnx`, 21 MB) — no manual quantization needed.
-
-<details>
-<summary>Manual backend override (BF16 or custom INT8)</summary>
-
-#### BF16 (Graviton3+, 38% faster CV)
-
-```bash
-docker run -v /path/to/data:/data --memory=28g \
-  -e TF_ENABLE_ONEDNN_OPTS=1 -e ONEDNN_DEFAULT_FPMATH_MODE=BF16 \
-  -e OMP_NUM_THREADS=$(nproc) -e OMP_PROC_BIND=false -e OMP_PLACES=cores \
-  ghcr.io/antomicblitz/deepvariant-arm64:v1.9.0-arm64.5 \
-  /opt/deepvariant/bin/run_deepvariant \
-  --model_type=WGS --ref=/data/reference.fasta --reads=/data/input.bam \
-  --output_vcf=/data/output.vcf.gz --num_shards=$(nproc) \
-  --call_variants_extra_args="--batch_size=256"
-```
-
-#### Custom INT8 quantization (WES, PacBio, or your own calibration data)
-
-The Docker image ships with a pre-quantized WGS INT8 model. To quantize a different model:
-
-```bash
-# Step 1: Run the pipeline to generate calibration TFRecords
-docker run -v /path/to/data:/data --memory=28g \
-  ghcr.io/antomicblitz/deepvariant-arm64:v1.9.0-arm64.5 \
-  /opt/deepvariant/bin/run_deepvariant \
-  --model_type=WGS --ref=/data/reference.fasta --reads=/data/input.bam \
-  --output_vcf=/data/output.vcf.gz --num_shards=$(nproc) \
-  --intermediate_results_dir=/data/intermediate
-
-# Step 2: Quantize (one-time, ~2 min)
-docker run -v /path/to/data:/data \
-  ghcr.io/antomicblitz/deepvariant-arm64:v1.9.0-arm64.5 \
-  quantize_model \
-  --input /opt/models/wgs/model.onnx \
-  --output /data/model_int8_custom.onnx \
-  --tfrecord_dir /data/intermediate/make_examples \
-  --saved_model_dir /opt/models/wgs
-
-# Step 3: Use the custom INT8 model
-docker run -v /path/to/data:/data --memory=28g \
-  ghcr.io/antomicblitz/deepvariant-arm64:v1.9.0-arm64.5 \
-  /opt/deepvariant/bin/run_deepvariant \
-  --model_type=WGS --ref=/data/reference.fasta --reads=/data/input.bam \
-  --output_vcf=/data/output.vcf.gz --num_shards=$(nproc) \
-  --call_variants_extra_args="--batch_size=256,--use_onnx=true,--onnx_model=/data/model_int8_custom.onnx"
-```
-
-</details>
-
-### Parallel call_variants (16+ vCPU)
-
-```bash
-docker run -e DV_AUTOCONFIG=1 -e DV_USE_JEMALLOC=1 \
-  -v /path/to/data:/data --memory=56g \
-  ghcr.io/antomicblitz/deepvariant-arm64:v1.9.0-arm64.5 \
-  /opt/deepvariant/scripts/run_parallel_cv.sh \
-  --model_type=WGS --ref=/data/reference.fasta --reads=/data/input.bam \
-  --output_vcf=/data/output.vcf.gz \
-  --num_shards=32 --num_cv_workers=4
-```
-
-ONNX backend only. `--num_shards` must be divisible by `--num_cv_workers`. On NVMe or tmpfs storage, add `--nocompress_intermediates` to skip gzip on TFRecord intermediates (~4% faster ME, ~12 GB disk for chr20).
-
-<details>
-<summary>All run_parallel_cv.sh options</summary>
-
-| Flag | Required | Default | Description |
-|------|----------|---------|-------------|
-| `--model_type` | Yes | -- | WGS, WES, PACBIO, ONT_R104, etc. |
-| `--ref` | Yes | -- | Reference FASTA |
-| `--reads` | Yes | -- | Input BAM/CRAM |
-| `--output_vcf` | Yes | -- | Output VCF |
-| `--num_shards` | Yes | -- | make_examples shards |
-| `--num_cv_workers` | No | 4 | Parallel CV workers |
-| `--regions` | No | -- | Genomic region (e.g., chr20) |
-| `--batch_size` | No | 256 | CV batch size |
-| `--onnx_model` | No | auto | Custom ONNX model path |
-| `--customized_model` | No | -- | Custom checkpoint |
-| `--sample_name` | No | -- | VCF header sample name |
-| `--output_gvcf` | No | -- | gVCF output path |
-| `--postprocess_cpus` | No | num_shards | CPUs for postprocess |
-| `--intermediate_results_dir` | No | tmpdir | Working directory |
-
-</details>
 
 ---
 

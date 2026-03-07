@@ -385,20 +385,24 @@ ME improvement is the dominant factor — jemalloc's per-thread arenas reduce ma
 |----------|--------------|----------|----------|---------------|-----------|
 | **Graviton4** (c8g.8xlarge) | 128s | 83s | **61s** | **2.10x** | 3 |
 | **Graviton3** (c7g.8xlarge) | 141s | 101s | **74s** | **1.90x** | 4 |
-| **Oracle A2** (16 OCPU) | 283s | 164s | **114s** | **2.47x** | 2* |
+| **Oracle A2** (16 OCPU, 32 vCPU) | 283s | 164s | **114s** | **2.47x** | 2* |
+| **Oracle A1** (16 OCPU, 16 vCPU) | 250s | — | **147s** | **1.70x** | 3 |
 
-*All variant counts match sequential baseline exactly (207,799).*
+*All variant counts match sequential baseline exactly (207,799). Oracle A1 tested with 16 shards / 4 workers (4 threads each), INT8 ONNX + jemalloc.*
 
 **Projected full pipeline with 4-way parallel CV:**
 
-| Platform | ME | CV (4-way) | PP | Wall (proj) | $/hr | $/genome |
-|----------|-----|-----------|-----|-------------|------|----------|
-| **Oracle A2** | 113s | 114s | 10s | **~250s** | $0.64 | **$2.14** |
-| **Graviton4** | 100s | 61s | 6s | **~172s** | $1.36 | **$3.13** |
-| **Graviton3** | 131s | 74s | 8s | **~218s** | $1.15 | **$3.35** |
+| Platform | ME | CV (4-way) | PP | Wall | $/hr | $/genome |
+|----------|-----|-----------|-----|------|------|----------|
+| **Oracle A1** | 216s | 147s | 13s | **376s** | $0.16 | **$0.80** |
+| **Oracle A2** | 113s | 114s | 10s | **~250s** | $0.64 | **~$2.14** |
+| **Graviton4** | 100s | 61s | 6s | **~172s** | $1.36 | **~$3.13** |
+| **Graviton3** | 131s | 74s | 8s | **~218s** | $1.15 | **~$3.35** |
 
-**Why 4-way scales nearly linearly on Oracle A2 (2.47x) but less on Graviton (1.90-2.10x):**
-Oracle A2's sequential CV (283s at 32 ORT threads) wastes 16 threads' worth of GEMM parallelism (rate doesn't improve past 16 threads). Four 8-thread workers each operate near the GEMM saturation point. On Graviton3/4, BF16 BFMMLA kernels have higher arithmetic intensity and better thread scaling, so the single-process baseline is already more efficient, leaving less room for parallel improvement.
+*Oracle A1 is measured (3-run avg). Others are projected from measured parallel CV + sequential ME/PP.*
+
+**Why 4-way scales nearly linearly on Oracle A2 (2.47x) but less on Graviton (1.90-2.10x) and A1 (1.70x):**
+Oracle A2's sequential CV (283s at 32 ORT threads) wastes 16 threads' worth of GEMM parallelism (rate doesn't improve past 16 threads). Four 8-thread workers each operate near the GEMM saturation point. On Graviton3/4, BF16 BFMMLA kernels have higher arithmetic intensity and better thread scaling, so the single-process baseline is already more efficient. On A1 (16 vCPU), sequential CV already runs near optimal at 16 threads — splitting into 4×4 puts each worker below the saturation point, so parallelism compensates for per-worker slowdown rather than recovering wasted threads.
 
 **Memory budget:** INT8 ONNX uses ~3 GB RSS per CV worker. 4 workers × 3 GB = 12 GB + ME headroom = ~16 GB total. Safe on 64 GB instances. TF SavedModel (~26 GB per process) would OOM with 2+ workers on 64 GB — parallel CV only works with ONNX backend.
 
@@ -447,7 +451,7 @@ Oracle A2's sequential CV (283s at 32 ORT threads) wastes 16 threads' worth of G
 | OMP env scoping (per-subprocess) | ME: 307→299s (2.6%), total 516→507s | **DONE** | 3-run avg; remaining 21s gap vs BF16 ME is baseline variance |
 | Graviton4 INT8 ONNX (Neoverse V2) | **28% faster total** vs Graviton3 INT8 | **DONE** | 366s (0.197s/100), ME 194s — ~$3.33/genome |
 | Oracle A2 INT8 ONNX (AmpereOne) | **$2.32/genome** | **DONE** | 542s (0.358s/100); OneDNN SIGILL, needs Docker rebuild |
-| **Oracle A1 INT8 ONNX (Altra/N1)** | **$1.04/genome** (new cost leader) | **DONE** | 486s (0.309 s/100 CV), jemalloc ON. 55% cheaper than A2. See `docs/oracle-a1-benchmark.md` |
+| **Oracle A1 INT8 ONNX (Altra/N1)** | **$1.04/genome** sequential, **$0.80** parallel | **DONE** | Sequential 486s, 4-way parallel 376s (CV 250→147s, 1.70x). See `docs/oracle-a1-benchmark.md` |
 | fast_pipeline at 16 vCPU | **42% SLOWER** (CPU contention) | **DONE** | 693s vs 487s sequential — needs 32+ vCPU |
 | Oracle A2 32-vCPU sequential 32 shards | **489s** (10% faster than 16 vCPU) | **DONE** | ME scales (167s), CV doesn't scale beyond 16 threads |
 | Oracle A2 32-vCPU fast_pipeline | **<1% improvement, PP broken** | **DONE** | 483s wall, PP fails on CVO ordering — not worth pursuing |
@@ -834,6 +838,7 @@ Apple Silicon's unified memory makes CPU→GPU data transfer free. On Linux ARM6
 | **Graviton4 4-way parallel CV** | 32 | $1.36 | ~2m52s | ~2.3 hr | **~$3.13** | Projected (ME=100+CV=61+PP=6=~172s) |
 | **Graviton3 4-way parallel CV** | 32 | $1.15 | ~3m38s | ~2.9 hr | **~$3.35** | Projected (ME=131+CV=74+PP=8=~218s) |
 | **Oracle A2 4-way parallel CV** | 32 (16 OCPU) | $0.64 | ~4m10s | ~3.3 hr | **~$2.14** | Projected (ME=113+CV=114+PP=10=~250s) |
+| **Oracle A1 4-way parallel CV** | 16 (16 OCPU) | $0.16 | 6m16s | ~5.0 hr | **$0.80** | Measured (3-run avg 376s, INT8+jemalloc) |
 | Graviton3 fast_pipeline BF16 16 vCPU | 16 | $0.58 | 11m33s | ~9.3 hr | $5.37 | Measured (2-run avg 693s)* — **42% SLOWER** |
 
 *All $/genome use formula: `chr20_wall_s × 48.1 / 3600 × $/hr`. Oracle A1 pricing: $0.01/OCPU/hr — 16 OCPU = $0.16/hr. Oracle A2 pricing: $0.04/OCPU/hr — 16-vCPU rows priced at 8 OCPU ($0.32/hr), 32-vCPU rows at 16 OCPU ($0.64/hr). Measured values averaged over N runs (N noted in Source column). Rows marked with \* have N<4 runs (wider confidence interval). Projected values marked with ~. WGS time extrapolation has ~15-20% uncertainty. Wall time includes ~4-5s Docker startup/inter-stage overhead beyond ME+CV+PP sum. INT8 matches BF16 speed on Graviton3 (no additional gain); INT8 is for non-BF16 platforms. fast_pipeline at 16 vCPU is slower due to CPU contention — needs 32+ vCPU.*

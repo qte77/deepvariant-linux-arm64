@@ -176,6 +176,74 @@ CV is unchanged — ONNX Runtime uses internal allocators that bypass glibc mall
 
 ---
 
+## Parallel call_variants (4-way)
+
+Tested on a second A1 instance (AD-2, same spec) using `run_parallel_cv.sh`.
+Splits 16 ME output shards across 4 call_variants workers (4 shards each,
+4 OMP threads each). Uses ONNX backend exclusively (~3-5 GB RSS per worker).
+
+### INT8 ONNX + jemalloc — 4-way parallel CV
+
+| Run | ME | CV (4-way) | PP | Wall |
+|-----|-----|-----------|-----|------|
+| 1 | 220s | 147s | 14s | 381s |
+| 2 | 212s | 147s | 13s | 372s |
+| 3 | 216s | 147s | 13s | 376s |
+
+| Config | N | Mean | sigma | CV speedup | $/genome |
+|--------|---|------|-------|------------|----------|
+| **INT8 4-way + jemalloc** | 3 | **376s** | 4.5s | **1.70x** | **$0.80** |
+
+CV is rock-stable at 147s across all 3 runs (sigma=0). ME variance (212-220s)
+is the dominant source of wall time variance.
+
+### FP32 ONNX + jemalloc — 4-way parallel CV
+
+| Run | ME | CV (4-way) | PP | Wall |
+|-----|-----|-----------|-----|------|
+| 1 | 219s | 379s | 12s | 610s |
+
+| Config | N | Wall | CV speedup | $/genome |
+|--------|---|------|------------|----------|
+| FP32 4-way + jemalloc | 1* | **610s** | 1.50x\*\* | **$1.30** |
+
+\*\*FP32 sequential CV estimated at ~567s (from ONNX FP32 wall=828s, ME=240s, PP=14s).
+
+### Parallel CV Analysis
+
+| Metric | Sequential INT8 | 4-way INT8 | Delta |
+|--------|----------------|------------|-------|
+| ME | 219s | 216s | ~same |
+| CV | 250s | 147s | **1.70x faster** |
+| PP | 14s | 13s | ~same |
+| **Wall** | **486s** | **376s** | **1.29x faster** |
+| **$/genome** | **$1.04** | **$0.80** | **23% cheaper** |
+
+**Why 1.70x (not 2-2.5x like 32-vCPU platforms):** On 32-vCPU machines,
+sequential CV wastes threads beyond the ~16-thread GEMM saturation point.
+4-way parallel recovers those wasted threads. On 16 vCPU, sequential CV
+already runs near optimal (16 threads = saturation). Splitting into 4×4
+puts each worker below the saturation point (4 threads), so parallelism
+compensates for per-worker slowdown rather than recovering wasted capacity.
+Net effect: 1.70x vs 1.90-2.47x on 32-vCPU machines.
+
+### Updated Cost Ranking (All Platforms, Best Config)
+
+| Rank | Platform | vCPU | $/hr | Config | Wall | $/genome |
+|------|----------|------|------|--------|------|----------|
+| **1** | **Oracle A1 (Altra)** | **16** | **$0.16** | **INT8 4-way + jemalloc** | **376s** | **$0.80** |
+| 2 | Oracle A1 (Altra) | 16 | $0.16 | INT8 sequential + jemalloc | 486s | $1.04 |
+| 3 | Oracle A2 4-way (projected) | 32 | $0.64 | INT8 4-way + jemalloc | ~250s | ~$2.14 |
+| 4 | Oracle A2 (AmpereOne) | 16 | $0.32 | INT8 sequential + jemalloc | 544s | $2.32 |
+| 5 | Graviton4 4-way (projected) | 32 | $1.36 | INT8/BF16 4-way | ~172s | ~$3.13 |
+| 6 | Graviton4 (c8g.4xlarge) | 16 | $0.68 | INT8 ONNX | 366s | $3.33 |
+| 7 | Graviton3 4-way (projected) | 32 | $1.15 | BF16 4-way | ~218s | ~$3.35 |
+| — | Google x86 (official) | 96 | $3.81 | — | — | $5.01 |
+
+**Oracle A1 + parallel CV at $0.80/genome is 6.3x cheaper than Google's official x86 reference.**
+
+---
+
 ## Capacity and Availability
 
 Oracle A1 instances have historically been capacity-constrained in Frankfurt

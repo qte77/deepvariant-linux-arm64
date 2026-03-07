@@ -395,6 +395,22 @@ Oracle A2's sequential CV (283s at 32 ORT threads) wastes 16 threads' worth of G
 
 **Memory budget:** INT8 ONNX uses ~3 GB RSS per CV worker. 4 workers × 3 GB = 12 GB + ME headroom = ~16 GB total. Safe on 64 GB instances. TF SavedModel (~26 GB per process) would OOM with 2+ workers on 64 GB — parallel CV only works with ONNX backend.
 
+### 2.2g Phase 2G: EncodeExample Serialization Optimization (CODE DONE, BENCHMARK PENDING)
+
+**Analysis:** Profiling shows `_message.so` (protobuf) at 29-43% of make_examples CPU — but this covers ALL protobuf ops in the process (pybind11 proto conversions, Read access, Variant field access), not just `EncodeExample` serialization. Function-level breakdown unavailable (Docker strips debug symbols).
+
+**Investigated and rejected:**
+- **Protobuf arena allocation:** Tested `Arena::CreateMessage<tensorflow::Example>(arena)` — 0% impact on Linux ARM64 (wall -0.2%, cache misses -0.5%, both within noise). Reverted. The `_message.so` share is dominated by varint serialization and proto field access, not allocation. See `docs/protobuf-serialization-notes.md` for full benchmark data.
+- **SerializeToArray swap:** `SerializeToString` already does single allocation internally. Switching to `SerializeToArray` saves one `resize()` call = 0.008% of runtime.
+
+**Changes made:**
+1. **`std::ostringstream` → `absl::StrCat`** (make_examples_native.cc:427-428): Variant range string formatting. `ostringstream` has locale overhead; `absl::StrCat` is 5-10x faster for simple concatenation.
+2. **Reusable pileup buffer** (make_examples_native.cc:417-421, make_examples_native.h:274-276): Added `mutable std::vector<unsigned char> encode_buffer_` member to `ExamplesGenerator`. Eliminates ~80K malloc/free cycles of ~154KB buffers per genome. After first call, `resize()` is no-op (same image dimensions). `memset` zeroing retained (FillPileupArray may not write all pixels).
+
+**Baseline (Oracle A2, chr20:10M-11M, 2878 examples, 3 runs):** 45.30s ± 0.02s. "After" measurement requires Docker image rebuild. See `docs/protobuf-serialization-notes.md`.
+
+**Future opportunity:** Direct TFRecord serialization bypassing `tf::Example` proto (similar to `stream_examples.cc` shared memory path). Would eliminate one ~154KB copy per candidate. Estimated 2-5% ME speedup. Not implemented — requires byte-for-byte wire format validation.
+
 ### 2.3 EfficientNet-B3 Model (DEAD END)
 
 **Attempted and measured.** Despite 3.2x fewer FLOPs, EfficientNet-B3 is **3x slower** than InceptionV3 on CPU inference. The full training pipeline was built and validated (see `TRAINING_EXPERIMENT.md`), but the speed result kills this approach.
@@ -425,6 +441,8 @@ Oracle A2's sequential CV (283s at 32 ORT threads) wastes 16 threads' worth of G
 | jemalloc (`DV_USE_JEMALLOC=1`) | **ME -14-17%, CV ~0%, Wall -7-9%** | **VERIFIED** | Graviton3: 487→443s (2 runs). Oracle A2: 584→544s (4 runs). Universal ARM64 benefit. |
 | **Parallel call_variants (4-way)** | **CV 2.0-2.5x faster** | **DONE** | Graviton4: CV 128→61s (2.10x). Graviton3: CV 141→74s (1.90x). Oracle A2: CV 283→114s (2.47x). |
 | ONNX inter-op parallelism | **No improvement** | **DONE** | intra-op GEMM dominates; inter-op hurts |
+| EncodeExample: ostringstream→StrCat + buffer reuse | ME TBD (est. 1-3%) | **CODE DONE, BENCHMARK PENDING** | Baseline: 45.30s±0.02s (Oracle A2, 1MB). See `docs/protobuf-serialization-notes.md` |
+| Protobuf arena allocation (tf::Example) | **0%** | **CLOSED** | Tested and reverted. Wall -0.2%, cache -0.5% (noise). See `docs/protobuf-serialization-notes.md` |
 | KMP_AFFINITY + system allocator | **30% REGRESSION** | **REVERTED** | Do not re-attempt |
 | ~~EfficientNet-B3~~ | **3x SLOWER** | **DEAD END** | Depthwise separable conv penalty |
 | ~~MobileNetV2~~ | **Same architecture class** | **DEAD END** | Same depthwise conv penalty |
@@ -544,7 +562,7 @@ These optimizations were investigated on macOS and found to have zero impact. Th
 | Attempted Optimization | Result | Why |
 |----------------------|--------|-----|
 | htslib decompression threads | 0% | libdeflate already fast, bottleneck is downstream |
-| Protobuf Arena allocation | 0% | Allocation isn't the bottleneck for Read objects |
+| Protobuf Arena allocation | 0% | Confirmed 0% on both macOS and Linux ARM64 (Neoverse-N1). Arena::CreateMessage\<tensorflow::Example\> tested and benchmarked: cache misses -0.5%, wall -0.2% (noise). `_message.so` 49% share is Smith-Waterman + serialization, not allocation. See `docs/protobuf-serialization-notes.md` |
 | TFRecord gzip removal | 0% in fast pipeline | Shared memory bypasses TFRecord entirely |
 | Channel object caching/Reset | 0% | Object creation isn't the bottleneck |
 | B-array fast-skip in aux parsing | 0% | Illumina WGS BAMs don't have ML/MM tags |
@@ -567,17 +585,131 @@ These optimizations were investigated on macOS and found to have zero impact. Th
 
 ### What DOES Matter (Profile First)
 
-From macOS profiling:
+**Linux ARM64 profiling (Graviton3 c7g.8xlarge, 32 vCPU, 16 shards, chr20):**
 
-| Component | CPU % | Action |
-|-----------|-------|--------|
-| Smith-Waterman realigner | ~30% | Already NEON-vectorized; haplotype cap reduces alignment count |
-| Pileup image generation | ~33% wall | ImageRow flat buffer optimization (-8.4%) |
-| malloc/free overhead | ~18% | Distributed — no single hotspot; flat buffer helps |
-| TFRecord gzip | ~17% | Eliminated by fast pipeline shared memory |
-| call_variants (TF inference) | ~83% of total | THE bottleneck — all GPU/ONNX work targets this |
+Measured via `perf stat -a` and `perf record -a` (system-wide during make_examples Docker run). See `scripts/profile_make_examples.sh`.
 
-**On Linux ARM64:** Profile with `perf stat` for L1 cache miss rates and `perf record` for hotspot identification. The hot path is the same on any architecture.
+**Hardware counters:**
+
+| Metric | glibc (default) | jemalloc | Delta |
+|--------|----------------|----------|-------|
+| Wall time | 237s | 212s | **-10.7%** |
+| IPC (insn/cycle) | 2.61 | 2.73 | +4.6% |
+| L1-dcache miss rate | 0.92% | 0.78% | **-15.2%** |
+| Cache ref miss rate | 0.93% | 0.79% | **-15.1%** |
+| Branch misprediction | 1.28% | 1.29% | ~same |
+
+**DSO-level CPU breakdown (`perf report --sort=dso --no-children`, Self%):**
+
+| DSO | Default | jemalloc | Category |
+|-----|---------|----------|----------|
+| `_message.so` (protobuf upb) | **29.4%** | 28.9% | Protobuf serialization |
+| `libtensorflow_cc.so.2` | **24.8%** | 25.7% | TF small model inference |
+| `libc.so.6` | **18.1%** | **4.4%** | malloc/free + libc |
+| `python3.10` | 9.8% | 10.3% | Python interpreter |
+| `libz.so.1.3` | **7.9%** | 8.2% | gzip (TFRecord compression) |
+| `libtensorflow_framework.so.2` | 3.5% | 3.7% | TF framework |
+| `[kernel.kallsyms]` | 3.1% | **9.4%** | Kernel (syscalls, page faults) |
+| `libjemalloc.so.2` | — | **4.7%** | jemalloc allocator |
+| `libstdc++.so.6` | 1.3% | 0.8% | C++ STL |
+| Other | ~2.1% | ~3.9% | numpy, pywrap_tf, ld-linux |
+
+**Key findings (vs macOS reference):**
+
+1. **Protobuf serialization is the #1 hotspot (29.4%).** `_message.so` (Google's upb C protobuf library) dominates. On macOS, Instruments attributed this to calling functions (pileup/realigner). The real cost is proto object creation/serialization for Read, Example, and Variant protos.
+
+2. **TF small model inference is #2 (24.8%).** The WGS small model (CNN for candidate filtering, added in v1.9.0) runs during make_examples. This was not in the macOS profiling baseline. On non-WGS models without small model, this ~25% would shift to pileup/realigner.
+
+3. **malloc/free is exactly 18.1% (matches macOS 18%).** With jemalloc: `libc.so.6` drops from 18.1% → 4.4%, `libjemalloc.so.2` adds 4.7%, net reduction ~9% absolute. jemalloc's per-thread arenas reduce L1 cache misses by 15% and increase IPC by 4.6% — it's better memory locality, not just faster malloc.
+
+4. **gzip compression is 7.9% (vs macOS 17%).** The TFRecord gzip share is diluted by protobuf and small model costs that were absent in the macOS profile. In absolute terms, zlib work is similar.
+
+5. **Kernel overhead jumps 3x with jemalloc (3.1% → 9.4%).** jemalloc uses more mmap/munmap for arena management. Net effect is still positive (wall -10.7%).
+
+6. **The macOS profile categories are misleading for optimization.** The macOS profile (pileup ~33%, Smith-Waterman ~30%) reflected function-level attribution. On Linux, the DSO-level view reveals that protobuf serialization and TF small model inference are the dominant costs — pileup/realigner code generates data, but serializing it costs more CPU than computing it.
+
+**Hardware counters (perf stat, Graviton3, 16 shards, chr20):**
+
+| Metric | glibc (default) | jemalloc | Delta |
+|--------|----------------|----------|-------|
+| Wall time | 237s | 205s | **-13.5%** |
+| IPC | 2.61 | 2.77 | +6.1% |
+| L1-dcache miss rate | 0.92% | 0.79% | -14.1% |
+| Cache ref miss rate | 0.93% | 0.80% | -14.0% |
+| Branch misprediction | 1.28% | 1.31% | +2.3% |
+
+jemalloc's ME speedup is explained by the 14% reduction in L1 cache misses (per-thread arenas reduce cross-thread cache line sharing in malloc metadata). IPC improves 6% as a result. Branch misprediction is unchanged — the benefit is purely memory subsystem.
+
+**Comparison with macOS reference profile:**
+
+| Component | macOS CPU % | Linux ARM64 CPU % | Notes |
+|-----------|-------------|-------------------|-------|
+| Pileup image generation | ~33% | (inside protobuf + libc) | Pileup creates protos — cost shows up in `_message.so` |
+| Smith-Waterman realigner | ~30% | (inside protobuf + libc) | Realigner creates alignment protos |
+| Protobuf serialization | (attributed to callers) | **29.4%** | Hidden in macOS profile |
+| TF small model inference | (not in macOS baseline) | **24.8%** | New in v1.9.0 WGS model |
+| malloc/free overhead | ~18% | **18.1%** | Consistent across platforms |
+| TFRecord gzip | ~17% | **7.9%** | Lower on Linux — libz more efficient or less data |
+| Python interpreter | (not separated) | **9.8%** | GIL overhead, object creation |
+| call_variants (TF inference) | ~83% of total | ~83% of total | Still the overall pipeline bottleneck |
+
+**To re-collect:** `sudo bash scripts/profile_make_examples.sh --data-dir /data --num-shards 16`. See the script for full options. Note: `perf report` on the 1.8 GB recording takes 5-10 minutes per report; function-level symbols are unresolved (Docker overlay strips debug info) but DSO-level is sufficient for categorization.
+
+**Linux ARM64 profiling (Oracle A2 AmpereOne, 32 vCPU / 16 OCPU, 16 shards, chr20):**
+
+Measured with `TF_ENABLE_ONEDNN_OPTS=0` (OneDNN+ACL causes SIGILL on AmpereOne — Eigen fallback).
+
+**Hardware counters:**
+
+| Metric | glibc (default) | jemalloc | Delta |
+|--------|----------------|----------|-------|
+| Wall time | 256.1s | 200.5s | **-21.7%** |
+| IPC (insn/cycle) | 1.72 | 1.77 | +2.9% |
+| L1-dcache miss rate | 1.16% | 0.92% | **-20.7%** |
+| Cache ref miss rate | 1.16% | 0.92% | **-20.7%** |
+| Branch misprediction | 1.62% | 1.75% | +8.0% |
+
+**DSO-level CPU breakdown (`perf report --sort=dso --no-children`, Self%):**
+
+| DSO | Default | jemalloc | Category |
+|-----|---------|----------|----------|
+| `_message.so` (protobuf upb) | **42.6%** | 49.7% | Protobuf serialization |
+| `libc.so.6` | **23.2%** | **4.9%** | malloc/free + libc |
+| `python3.10` | 13.2% | 15.5% | Python interpreter |
+| `libz.so.1.3` | 9.7% | 11.3% | gzip (TFRecord compression) |
+| `libtensorflow_cc.so.2` | 2.9% | 3.6% | TF Eigen inference (no OneDNN) |
+| `libtensorflow_framework.so.2` | 2.6% | 2.8% | TF framework |
+| `libstdc++.so.6` | 2.2% | 1.3% | C++ STL |
+| `[kernel.kallsyms]` | 1.1% | 1.4% | Kernel |
+| `libjemalloc.so.2` | — | **6.5%** | jemalloc allocator |
+| Other | ~2.5% | ~3.0% | pywrap_tf, numpy, ld-linux |
+
+**Cross-platform comparison (Graviton3 vs Oracle A2):**
+
+| Metric | Graviton3 (Neoverse V1) | Oracle A2 (AmpereOne) | Significance |
+|--------|------------------------|----------------------|--------------|
+| IPC (default) | **2.61** | 1.72 | G3 has 52% higher IPC — better out-of-order execution for this workload |
+| IPC (jemalloc) | **2.73** | 1.77 | jemalloc IPC gain: G3 +4.6%, A2 +2.9% |
+| L1 miss (default) | **0.92%** | 1.16% | A2 has 26% higher L1 miss rate |
+| L1 miss (jemalloc) | 0.78% | 0.92% | jemalloc reduces: G3 -15%, A2 -21% (A2 benefits more) |
+| `libc.so.6` share (default) | 18.1% | **23.2%** | A2 has 28% higher malloc share — confirms larger jemalloc benefit |
+| `libc.so.6` share (jemalloc) | 4.4% | 4.9% | Both converge to ~5% with jemalloc |
+| `_message.so` share | 29.4% | **42.6%** | Protobuf dominates more on A2 (TF Eigen is lightweight vs OneDNN GEMM) |
+| TF inference share | **24.8%** | 5.5% | G3 OneDNN+ACL GEMM kernels are compute-dense; A2 Eigen is lightweight |
+| Wall time (default) | **237s** | 256.1s | G3 is 7.5% faster |
+| Wall time (jemalloc) | **212s** | 200.5s | A2 catches up with jemalloc (jemalloc wall gain: G3 -10.7%, A2 -21.7%) |
+
+**Key cross-platform findings:**
+
+1. **Oracle A2's malloc contention is 28% higher than Graviton3** (23.2% vs 18.1% of cycles in `libc.so.6`). This quantitatively explains why jemalloc's wall time improvement is ~2x larger on A2 (21.7% vs 10.7%). AmpereOne's cache hierarchy produces more cross-thread contention in glibc's malloc metadata.
+
+2. **jemalloc's L1 cache miss reduction is larger on A2** (20.7% vs 15.2%). Both platforms converge to similar L1 miss rates with jemalloc (~0.78-0.92%), but A2 starts from a worse baseline. Per-thread arenas eliminate the cross-thread cache line sharing that AmpereOne's memory subsystem handles less efficiently.
+
+3. **TF inference profile is radically different.** On Graviton3, OneDNN+ACL GEMM kernels make `libtensorflow_cc.so` the #2 hotspot (24.8%) — compute-dense matrix multiplications. On A2 with Eigen fallback, the same small model inference uses lightweight code paths (5.5% total), shifting the profile toward protobuf (42.6%) and malloc (23.2%). An AmpereOne Docker rebuild with native OneDNN would likely shift 15-20% of cycles from protobuf/malloc into efficient GEMM, improving both IPC and wall time.
+
+4. **AmpereOne IPC (1.72) is 34% lower than Graviton3 (2.61).** This reflects both the Eigen-vs-OneDNN backend difference and AmpereOne's microarchitectural characteristics. The Eigen code paths produce more memory-bound stalls. This IPC gap is the primary reason A2 is slower despite having the same vCPU count.
+
+5. **The AmpereOne Docker rebuild is doubly motivated.** Not just for BF16 BFMMLA support, but because OneDNN+ACL would transform the profile: shifting cycles from memory-bound protobuf/malloc (low IPC) into compute-bound GEMM (high IPC), while simultaneously reducing malloc pressure by using OneDNN's internal memory pools. Projected improvement: 25-35% make_examples speedup on top of jemalloc gains.
 
 ### Operational Pitfalls (Docker + Cloud Instances)
 

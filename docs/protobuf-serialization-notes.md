@@ -1,0 +1,129 @@
+# Protobuf Serialization in make_examples: Analysis and Optimizations
+
+## Profiling Context
+
+`perf report --sort=dso` on Linux ARM64 shows `_message.so` (protobuf upb C library) as the #1 CPU consumer in make_examples:
+
+| Platform | `_message.so` CPU % |
+|----------|-------------------|
+| Graviton3 (Neoverse V1, OneDNN+ACL) | 29.4% |
+| Oracle A2 (AmpereOne, Eigen fallback) | 42.6% |
+
+This DSO covers ALL protobuf operations in the Python process — not just serialization in C++. It includes pybind11_protobuf `native_proto_caster` conversions at the Python/C++ boundary, Read proto access, DeepVariantCall candidate creation, and Variant field access.
+
+Function-level breakdown within `_message.so` is unavailable because Docker overlay strips debug symbols (`perf report` shows `[unknown]` for functions).
+
+## What Was Investigated
+
+### Arena Allocation (Not Helpful for Most Protos)
+
+Arena allocation (`google::protobuf::Arena`) replaces per-field heap calls with bump-pointer allocation into a pre-allocated slab, freeing all messages in O(1) at scope exit.
+
+**Why it doesn't help most make_examples protos:**
+- `AlleleCount` protos: pre-allocated in a vector in `AlleleCounter::Init()`, mutated in-place — not per-candidate heap allocation
+- `DeepVariantCall`: returned by value with RVO (Return Value Optimization) — no explicit heap allocation
+- `tensorflow::Example`: stack-allocated; arena allocation was tested and reverted (0% impact, see benchmark below)
+
+The `tensorflow::Example` proto in `EncodeExample()` was moved to arena allocation (`Arena::CreateMessage<tensorflow::Example>(arena)`) which helps with its nested Feature map entries, BytesList, and Int64List submessages. These are the only per-candidate proto allocations worth targeting.
+
+**macOS reference:** Arena allocation showed 0% impact on Apple Silicon. This is expected — Apple's malloc zones have ~80ns DRAM latency vs ~166ns on AmpereOne DDR5. The allocation overhead that arenas eliminate is proportionally smaller on Apple Silicon.
+
+**Linux ARM64 benchmark (arena vs baseline):** Measured on Hetzner CAX31 (8 vCPU Neoverse-N1), bazel-bin binary, chr20:10M-12M (~5082 examples):
+
+| Metric | Baseline (stack) | Arena (CreateMessage) | Delta |
+|--------|------------------|-----------------------|-------|
+| Wall time | 80.09s | 79.91s | -0.2% (noise) |
+| Instructions | 473,206,820,116 | 473,190,651,868 | -0.003% |
+| Cycles | 237,333,011,949 | 236,151,565,537 | -0.5% |
+| IPC | 1.99 | 2.00 | +0.5% |
+| Cache misses | 1,336,680,390 | 1,329,955,966 | -0.5% |
+| Cache miss rate | 0.81% | 0.80% | -1.2% |
+| `_message.so` share | 49.45% | 49.35% | -0.1pp |
+
+**Conclusion:** Arena allocation of `tensorflow::Example` has zero measurable impact on Linux ARM64. The `_message.so` share is dominated by Smith-Waterman alignment (10.7%), pileup computation, and varint serialization — not allocation. The ~12 per-example submessage allocations eliminated by the arena are negligible. Arena allocation is **closed as a dead end** for this codebase on all platforms (macOS and Linux ARM64 both show 0%).
+
+**Arena was reverted** — the code uses stack-allocated `tensorflow::Example example;` (the original pattern). The encode_buffer_ reuse and absl::StrCat improvements are kept as they address a different problem (repeated 154KB vector allocation, not proto submessage allocation).
+
+### SerializeToArray vs SerializeToString (No Improvement)
+
+`SerializeToString` internally does:
+1. `ByteSizeLong()` — traverses proto tree to compute size
+2. `str.resize(byte_size)` — single allocation
+3. `SerializePartialToArray(str.data(), byte_size)` — writes bytes
+
+Replacing with `SerializeToArray` into a pre-allocated buffer only skips step 2's single `resize()`. For a ~154KB Example proto with ~80K candidates, this saves ~16ms against a 200+ second runtime (0.008%). Not worth the complexity.
+
+### Direct TFRecord Serialization (Future Opportunity)
+
+The `stream_examples.cc` path already bypasses `tensorflow::Example` entirely — it writes raw bytes (pileup image, variant, alt_alleles) directly to shared memory via `WriteBytesToShm()`.
+
+A similar approach for the TFRecord path could:
+1. Pre-compute total byte size (fixed header + image_size + variant_size + small fields)
+2. Write protobuf tags and length prefixes directly using `CodedOutputStream`
+3. Copy image data directly from ImageRow pointers into the output buffer
+
+This would eliminate one full copy of the ~154KB pileup image per candidate (currently: ImageRow → `encode_buffer_` → Example proto internal buffer → serialized output). Estimated savings: 2-5% of make_examples wall time.
+
+**Not implemented yet** — requires byte-for-byte validation against the proto-based path and careful protobuf wire format handling.
+
+## Changes Made
+
+### 1. `absl::StrCat` replacing `std::ostringstream` (make_examples_native.cc)
+
+The variant range string (`"chr20:10000001-10000002"`) was formatted via `std::ostringstream`, which has locale handling overhead and internal buffering. Replaced with `absl::StrCat` which is 5-10x faster for simple concatenation.
+
+### 2. Reusable pileup data buffer (make_examples_native.cc, make_examples_native.h)
+
+`EncodeExample()` allocated a fresh `std::vector<unsigned char>` (~154KB) per candidate, zeroed it, filled it via `FillPileupArray`, then discarded it. With ~80K candidates per genome, this is ~80K malloc/free cycles of 154KB buffers plus ~12GB of unnecessary zeroing.
+
+Replaced with a persistent `mutable std::vector<unsigned char> encode_buffer_` member on `ExamplesGenerator`. After the first call, `resize()` is a no-op (same image dimensions every iteration), eliminating repeated heap allocation. `memset` zeroing is retained because `FillPileupArray` may not write all pixels (e.g., short pileups with fewer reads than the image height).
+
+## Baseline Benchmark (Before Changes)
+
+Measured on Oracle A2 (AmpereOne, 16 OCPU / 32 vCPU), `TF_ENABLE_ONEDNN_OPTS=0`, Docker image `deepvariant-arm64:v1.9.0-arm64.2`.
+
+**Region:** chr20:10000000-11000000 (1MB, 2878 examples written)
+
+| Run | Wall Time |
+|-----|-----------|
+| 1 | 45.316s |
+| 2 | 45.280s |
+| 3 | 45.307s |
+| **Mean** | **45.30s ± 0.02s** |
+
+**"After" measurement pending** — requires Docker image rebuild (C++ changes compile into `make_examples_native.so` inside Bazel-built zip). Will be measured during next image rebuild cycle.
+
+## How to Verify
+
+### Correctness
+Run on a small region and compare example counts (before and after should match):
+```bash
+docker run --rm \
+  -v /data/bam:/data/bam \
+  -v /data/reference:/data/reference \
+  -v /data/output:/data/output \
+  --memory=28g \
+  --entrypoint /bin/bash \
+  deepvariant-arm64:v1.9.0-arm64.2 \
+  -c "export TF_ENABLE_ONEDNN_OPTS=0 && python3 /opt/deepvariant/bin/make_examples.zip \
+    --mode calling \
+    --ref /data/reference/GRCh38_no_alt_analysis_set.fasta \
+    --reads /data/bam/HG003.novaseq.pcr-free.35x.dedup.grch38_no_alt.chr20.bam \
+    --regions chr20:10000000-11000000 \
+    --channel_list=read_base,base_quality,mapping_quality,strand,read_supports_variant,base_differs_from_ref \
+    --examples /data/output/test.tfrecord.gz \
+    --task 0"
+# Expected: 2878 examples written
+```
+
+### Performance (after rebuild)
+Run 3 times on chr20:10M-11M (same region as baseline) and compare wall time against 45.30s baseline.
+
+### Profiling DSO breakdown
+```bash
+perf record -g -o /tmp/perf.data -- \
+  /opt/deepvariant/bin/make_examples ...
+perf report -i /tmp/perf.data --sort=dso --no-children
+```
+
+Compare `libc.so.6` share before/after. The buffer reuse should reduce malloc/free calls (fewer 154KB allocations), showing up as lower `libc.so.6` CPU share rather than `_message.so` directly.

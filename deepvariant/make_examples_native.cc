@@ -34,6 +34,7 @@
 #include <algorithm>
 #include <array>
 #include <cstdint>
+#include <cstring>
 #include <memory>
 #include <sstream>
 #include <string>
@@ -412,26 +413,21 @@ std::string ExamplesGenerator::EncodeExample(
   image_shape[1] = image[0]->Width();              // Width of the pileup.
   image_shape[2] = options_.pic_options().channels().size();  // Num channels.
 
-  std::vector<unsigned char> data(
-      image_shape[0] * image_shape[1] * image_shape[2], 0);
-  FillPileupArray(image, alt_image, alt_aligned_pileup_, &data, data.size());
+  const size_t image_size =
+      image_shape[0] * image_shape[1] * image_shape[2];
+  encode_buffer_.resize(image_size);
+  std::memset(encode_buffer_.data(), 0, image_size);
+  FillPileupArray(image, alt_image, alt_aligned_pileup_, &encode_buffer_,
+                  encode_buffer_.size());
 
   // Encode alt allele indices.
   absl::flat_hash_set<int> alt_indices_set;
   std::string alt_indices_encoded =
       EncodeAltAlleles(variant, alt_combination, &alt_indices_set);
 
-  // Encode variant range.
-  Range variant_range;
-  std::string variant_range_encoded;
-  std::ostringstream s;
-  // The string literal form looks like:
-  //   reference_name:start+1-end
-  // since start and end are zero-based inclusive (start) and exclusive (end),
-  // while the literal form is one-based inclusive on both ends.
-  s << variant.reference_name() << ":" << variant.start() + 1 << "-"
-    << variant.end();
-  variant_range_encoded.assign(s.str());
+  // Encode variant range as "reference_name:start+1-end" (1-based inclusive).
+  std::string variant_range_encoded = absl::StrCat(
+      variant.reference_name(), ":", variant.start() + 1, "-", variant.end());
 
   // Encode features of the example.
   tensorflow::Example example;
@@ -450,7 +446,7 @@ std::string ExamplesGenerator::EncodeExample(
       ->add_value(alt_indices_encoded);
   (*example.mutable_features()->mutable_feature())["image/encoded"]
       .mutable_bytes_list()
-      ->add_value(data.data(), data.size());
+      ->add_value(encode_buffer_.data(), encode_buffer_.size());
   for (auto dim : image_shape) {
     (*example.mutable_features()->mutable_feature())["image/shape"]
         .mutable_int64_list()

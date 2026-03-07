@@ -268,6 +268,10 @@ class ExamplesGenerator {
 
   // StreamExamples class handles the output to shared memory buffer.
   std::unique_ptr<StreamExamples> stream_examples_;
+
+  // Reusable buffer for pileup image data in EncodeExample. Avoids repeated
+  // ~154KB allocations per candidate (~80K candidates per genome).
+  mutable std::vector<unsigned char> encode_buffer_;
 };
 
 // Helper class to allow unit testing of some private methods.

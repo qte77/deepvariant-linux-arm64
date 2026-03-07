@@ -54,7 +54,7 @@ WORKDIR /opt/deepvariant
 # after build-prereq installs it, but TF import in build_release needs it.
 RUN chmod +x build-prereq-arm64.sh build_release_binaries_arm64.sh && \
     ./build-prereq-arm64.sh \
-    && PATH="${HOME}/.local/bin:${HOME}/bin:${PATH}" pip3 install --ignore-installed cryptography cffi \
+    && PATH="${HOME}/.local/bin:${HOME}/bin:${PATH}" pip3 install --ignore-installed cryptography cffi "httplib2<0.22" \
     && PATH="${HOME}/bin:${PATH}" ./build_release_binaries_arm64.sh
 
 FROM ${FROM_IMAGE}

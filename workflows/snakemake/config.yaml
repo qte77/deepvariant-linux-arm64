@@ -1,0 +1,23 @@
+# DeepVariant ARM64 — Snakemake configuration
+#
+# Single sample:
+#   bam: /data/sample.bam
+#   ref: /data/GRCh38.fasta
+#
+# Batch mode (CSV with columns: sample,bam,bai):
+#   input: samples.csv
+#   ref: /data/GRCh38.fasta
+
+# ── Required ─────────────────────────────────────────────────────────────
+ref: /data/reference/GRCh38_no_alt_analysis_set.fasta
+# bam: /data/sample.bam              # Single sample
+# input: samples.csv                  # Batch mode (mutually exclusive with bam)
+
+# ── Optional ─────────────────────────────────────────────────────────────
+model_type: WGS                       # WGS, WES, or PACBIO
+# regions: chr20                      # BED file or region string
+outdir: results
+batch_size: 256
+num_shards: 16                        # 0 = use all available cores
+memory: 28g                           # Docker memory limit
+image: "ghcr.io/antomicblitz/deepvariant-arm64:v1.9.0-arm64.5"

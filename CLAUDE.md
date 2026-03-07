@@ -34,7 +34,7 @@ This project ports DeepVariant to Linux ARM64 with hardware-accelerated inferenc
 
 **Platform compatibility notes:**
 - **Graviton4 (c8g):** TF+OneDNN BF16 works but requires 64+ GB RAM (TF SavedModel uses ~26 GB RSS; OOM-killed on 32 GB machines when forking postprocess). Use ONNX backend on 32 GB instances.
-- **Oracle A2 (AmpereOne/Siryn):** OneDNN+ACL compiled for Neoverse-N1 causes SIGILL on AmpereOne. Must use `TF_ENABLE_ONEDNN_OPTS=0` (Eigen fallback) or ONNX backend. Docker image rebuild with AmpereOne-targeted OneDNN would recover full performance.
+- **Oracle A2 (AmpereOne/Siryn):** OneDNN+ACL (compiled for Neoverse-N1) triggers SIGILL on AmpereOne in both make_examples and call_variants. ISA cap also fails under high concurrency. Must use `TF_ENABLE_ONEDNN_OPTS=0` (Eigen fallback) for all binaries. Use INT8 ONNX for call_variants ($2.32/genome). BF16 requires TF source rebuild with `-mcpu=ampere1`. See `docs/onednn-ampereone.md`.
 - **Oracle A1 (Altra):** Persistent "Out of host capacity" in Frankfurt free tier. Not yet benchmarked.
 
 ***
@@ -300,13 +300,12 @@ INT8 matches or exceeds BF16 in all tested stratification regions. No localized 
    - **Cost:** $0.68/hr × ~4.9hr WGS = ~$3.33/genome (INT8 ONNX).
 
 3. **Oracle A2 (AmpereOne) benchmark (DONE)** — Benchmarked on VM.Standard.A2.Flex (16 OCPU, 32 GB). Oracle A1 (Altra) had no capacity in Frankfurt free tier.
-   - **SIGILL with OneDNN+ACL:** Docker image compiled for Neoverse-N1. AmpereOne (Siryn) has different microarchitecture → `Fatal Python error: Illegal instruction` in TF during make_examples (`small_model/inference.py:141`). Fix: `TF_ENABLE_ONEDNN_OPTS=0` (Eigen fallback).
+   - **SIGILL with OneDNN+ACL:** ACL (compiled for Neoverse-N1) triggers SIGILL on AmpereOne in BOTH make_examples AND call_variants. ISA cap (`ONEDNN_MAX_CPU_ISA=ADVANCED_SIMD`) also fails under 16-way concurrency. Only fix: `TF_ENABLE_ONEDNN_OPTS=0` (Eigen fallback) for all binaries. See `docs/onednn-ampereone.md`.
    - **INT8 ONNX (2-run avg):** ME ~280s, CV ~245s (0.358 s/100), PP ~17s, total **~542s (9m02s)**. Cost: **~$2.32/genome** — cheapest INT8 config.
    - **TF Eigen FP32:** ME 287s, CV 325s (0.387 s/100), PP 17s, total **629s**. Rate matches Graviton3 FP32 (0.379 s/100).
    - **ONNX FP32:** ME 277s, CV 613s (0.759 s/100), PP 17s, total **907s**. ONNX is 1.96x slower than TF Eigen on AmpereOne.
    - **Cost winner:** Oracle A2 at **$2.32/genome** (INT8 ONNX) is the cheapest tested platform. At $0.32/hr for 16 OCPUs, the low hourly rate dominates.
-   - **BF16 OneDNN test:** SIGILL confirmed even in make_examples' small model inference — the entire OneDNN+ACL stack is incompatible with AmpereOne.
-   - **Rebuild opportunity:** AmpereOne has BF16+i8mm flags. A Docker image rebuilt with OneDNN targeting AmpereOne ISA would enable BF16 fast math and could reach ~$1.50/genome.
+   - **BF16 blocked:** Requires TF source rebuild with `-mcpu=ampere1` to recompile ACL for AmpereOne ISA. Projected ~$1.44/genome with BF16.
 
 4. **Oracle A1 INT8 benchmark (DEPRIORITIZED)** — Persistent "Out of host capacity" for A1 instances in Frankfurt. Oracle A2 benchmarks complete and cheaper ($2.14-2.32/genome); A1 would only be relevant for ultra-low-cost scenarios.
 
@@ -577,8 +576,8 @@ These optimizations were investigated on macOS and found to have zero impact. Th
 | **ONNX dynamic INT8 quantization** | **Broken on ARM64** | `ConvInteger(10)` op not implemented in CPUExecutionProvider — use static INT8 (QDQ format) instead |
 | **INT8 on Graviton3+ (vs BF16)** | **No additional gain** | INT8 ONNX static = 0.225s/100, TF+OneDNN BF16 = 0.232s/100 — essentially same speed |
 | **TF SavedModel on 32 GB machines** | **OOM kill** | TF allocates ~26 GB RSS for InceptionV3; forking postprocess pushes >32 GB → OOM. Use ONNX backend or 64+ GB instances |
-| **OneDNN+ACL on AmpereOne (Siryn)** | **SIGILL** | Docker image compiled for Neoverse-N1 uses instructions unavailable on AmpereOne. Use `TF_ENABLE_ONEDNN_OPTS=0` or rebuild image |
-| **ONNX on AmpereOne** | **1.96x slower than TF Eigen** | ONNX CPUExecutionProvider much worse than TF Eigen on AmpereOne (0.759 vs 0.387 s/100) — use TF Eigen fallback |
+| **OneDNN+ACL on AmpereOne (Siryn)** | **SIGILL** | ACL compiled for Neoverse-N1 triggers SIGILL on AmpereOne in both ME and CV. ISA cap also fails at 16-way concurrency. Use `TF_ENABLE_ONEDNN_OPTS=0`. BF16 requires TF source rebuild. See `docs/onednn-ampereone.md` |
+| **ONNX on AmpereOne** | **1.96x slower than TF Eigen** | ONNX CPUExecutionProvider much worse than TF Eigen on AmpereOne (0.759 vs 0.387 s/100) — use INT8 ONNX for CV only |
 | **fast_pipeline on Oracle A2 32-vCPU** | **<1% improvement, PP broken** | CV stalls on streaming, PP fails on CVO ordering. Sequential 32 shards (489s) is better than fast_pipeline (483s wall, no VCF) |
 | **INT8 ONNX CV scaling beyond 16 threads** | **No improvement** | 0.358 s/100 at 16 threads, 0.384 s/100 at 32 threads with 16 shards. ORT GEMM parallelism saturates at ~16 threads |
 | **ONNX inter-op parallelism (inter_op_threads > 1)** | **No improvement** | Tested intra/inter splits (28/2, 24/4, 20/6, 16/8, 16/16). All equal or worse than 32/1 baseline. InceptionV3 branches don't benefit from inter-op threading |

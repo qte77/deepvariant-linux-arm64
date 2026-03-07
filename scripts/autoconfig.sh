@@ -88,16 +88,12 @@ fi
 
 case "${CPU_FAMILY}" in
   ampereone)
-    BACKEND="onnx_int8"
+    BACKEND="tf_fp32"
     TF_ONEDNN="0"
-    FPMATH=""
-    NOTES+=("AmpereOne: OneDNN/ACL disabled (SIGILL). Using ONNX INT8.")
-    NOTES+=("AmpereOne has BF16+i8mm flags — Docker rebuild with AmpereOne-targeted OneDNN would enable BF16.")
-    # Hard safety: if user explicitly set OneDNN=1, warn and exit 1
-    if [[ "${TF_ENABLE_ONEDNN_OPTS:-}" == "1" ]]; then
-      WARNINGS+=("SAFETY: TF_ENABLE_ONEDNN_OPTS=1 will SIGILL on AmpereOne. Forcing to 0.")
-      EXIT_CODE=1
-    fi
+    NOTES+=("AmpereOne: OneDNN+ACL DISABLED (SIGILL — ACL compiled for Neoverse-N1).")
+    NOTES+=("Both make_examples and call_variants crash with TF_ENABLE_ONEDNN_OPTS=1.")
+    NOTES+=("Use INT8 ONNX for call_variants (--use_onnx). See docs/onednn-ampereone.md.")
+    NOTES+=("Rebuild TF from source on AmpereOne to unlock BF16 (~\$1.44/genome target).")
     ;;
   neoverse-v1-graviton3|neoverse-v2-graviton4)
     if [[ "${HAS_BF16}" == "true" ]]; then

@@ -37,14 +37,18 @@ if [[ "${DV_USE_JEMALLOC:-0}" == "1" ]]; then
   fi
 fi
 
-# Hard safety: AmpereOne + OneDNN causes SIGILL (ACL compiled for Neoverse-N1).
-# This override is always active — a SIGILL crash is worse than an unexpected
-# env change. See docs/oracle-a2-sigill.md for details.
+# AmpereOne OneDNN safety block: ACL (statically linked, compiled for Neoverse-N1)
+# triggers SIGILL on AmpereOne (CPU part 0xac3) in BOTH make_examples and
+# call_variants. The bug affects all OneDNN code paths — ISA cap
+# (ONEDNN_MAX_CPU_ISA=ADVANCED_SIMD) also fails under high concurrency.
+# Fix: disable OneDNN entirely (Eigen fallback). Requires TF source rebuild
+# with AmpereOne-targeted ACL to unlock BF16.
+# See docs/onednn-ampereone.md for full diagnostic trail (confirmed 2026-03-07).
 if [[ -f /proc/cpuinfo ]] && grep -qm1 "0xc0" /proc/cpuinfo 2>/dev/null; then
   _part=$(grep -m1 "CPU part" /proc/cpuinfo 2>/dev/null | awk '{print $NF}' || true)
-  if [[ "${_part}" == "0xac3" && "${TF_ENABLE_ONEDNN_OPTS:-0}" == "1" ]]; then
+  if [[ "${_part}" == "0xac3" ]]; then
     export TF_ENABLE_ONEDNN_OPTS=0
-    echo "deepvariant: SAFETY: AmpereOne detected — forcing TF_ENABLE_ONEDNN_OPTS=0 (OneDNN+ACL causes SIGILL on this CPU)" >&2
+    echo "deepvariant: AmpereOne detected — TF_ENABLE_ONEDNN_OPTS=0 (ACL dispatch bug, see docs/onednn-ampereone.md)" >&2
   fi
 fi
 

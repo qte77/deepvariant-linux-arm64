@@ -863,7 +863,7 @@ def main(_):
   # commands_logfiles order: make_examples(0), call_variants(1),
   # postprocess_variants(2), [optional vcf_stats(3), runtime_report(4)]
   # Only call_variants (index 1) needs OMP vars.
-  step_envs = {1: cv_env}  # All other steps use clean_env.
+  step_envs = {1: cv_env}  # Other steps use clean_env.
 
   logging.info('base env = %s', base_env)
   for step_idx, (command, logfile) in enumerate(commands_logfiles):

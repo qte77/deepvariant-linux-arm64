@@ -7,7 +7,7 @@
 
 > Fork of [google/deepvariant](https://github.com/google/deepvariant) v1.9.0. Tags: `v{upstream}-arm64.{n}`.
 
-**The gold standard in variant calling. Now on ARM64. For less than the price of a candy bar per genome.**
+**The gold standard in variant calling. Now on ARM64. For less than the price of a chewing gum per genome.**
 
 Google's [DeepVariant](https://rdcu.be/7Dhl) (Poplin et al., *Nature Biotechnology* 2018) achieves the highest SNP accuracy of any open-source variant caller. It also had no Linux ARM64 build — until this fork. Run it on a $0.16/hr Oracle A1 instance and get the same accuracy as a well-equipped sequencing center, at **$0.80/genome on dedicated ARM64 vCPUs** — or **$0.33/genome on a Hetzner CAX41 shared instance** in the EU.
 

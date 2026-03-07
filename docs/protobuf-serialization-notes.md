@@ -84,7 +84,30 @@ uses hash table iteration order.
 
 **Estimated impact:** ~20µs per example (one 154KB memcpy saved). On chr20:10M-11M
 (2878 examples, 45.3s): ~0.13%. On full chr20 ME (~200s, 80K examples): ~0.8%.
-**Benchmark pending** — requires Docker image rebuild on ARM64.
+
+**Benchmark results (2026-03-07):**
+
+Graviton3 (c7g.8xlarge, 32 vCPU, BF16+jemalloc, chr20:10M-11M, 2878 examples):
+
+| Config | Run 1 | Run 2 | Run 3 | Mean ± σ |
+|--------|-------|-------|-------|----------|
+| Baseline (proto) | 34.741s | 34.620s | 34.595s | **34.65s ± 0.08s** |
+| Direct serial | 34.550s | 34.689s | 34.544s | **34.59s ± 0.08s** |
+| **Delta** | | | | **-0.06s (-0.2%, noise)** |
+
+Oracle A2 (AmpereOne, 32 vCPU, Eigen+jemalloc, chr20:10M-11M, 2878 examples):
+
+| Config | Run 1 | Run 2 | Run 3 | Mean ± σ |
+|--------|-------|-------|-------|----------|
+| Baseline (proto) | 42.749s | 44.092s | 44.626s | **43.82s ± 0.98s** |
+| Direct serial | 45.000s | 44.865s | 44.384s | **44.75s ± 0.33s** |
+| **Delta** | | | | **+0.93s (+2.1%, noise)** |
+
+**Conclusion:** 0% measurable impact on both platforms. The `_message.so` 29-43%
+CPU share is dominated by protobuf operations OTHER than Example serialization
+(Read protos, Variant access, pybind11 conversions, varint encoding). The ~20µs
+per-example saving from eliminating one 154KB memcpy is far below the noise floor.
+Code is retained because it is cleaner (removes tf::Example + feature.pb.h deps).
 
 ## Changes Made
 
@@ -111,9 +134,11 @@ Measured on Oracle A2 (AmpereOne, 16 OCPU / 32 vCPU), `TF_ENABLE_ONEDNN_OPTS=0`,
 | 3 | 45.307s |
 | **Mean** | **45.30s ± 0.02s** |
 
-**"After" measurement pending** — requires Docker image rebuild (C++ changes
-compile into `make_examples_native.so` inside Bazel-built zip). Includes both
-buffer reuse (df3e13d9) and direct TFRecord serialization changes.
+**"After" results:** See Direct TFRecord Serialization benchmark above. Buffer
+reuse (df3e13d9) was included in both baseline and direct-serial images, so its
+isolated impact is measured as the difference between 45.30s (pre-df3e13d9,
+Oracle A2 without jemalloc) and 43.82s (post-df3e13d9, Oracle A2 with jemalloc).
+The combined effect of buffer reuse + jemalloc is -1.48s (-3.3%).
 
 ## How to Verify
 

@@ -394,21 +394,28 @@ Oracle A2's sequential CV (283s at 32 ORT threads) wastes 16 threads' worth of G
 
 **Memory budget:** INT8 ONNX uses ~3 GB RSS per CV worker. 4 workers × 3 GB = 12 GB + ME headroom = ~16 GB total. Safe on 64 GB instances. TF SavedModel (~26 GB per process) would OOM with 2+ workers on 64 GB — parallel CV only works with ONNX backend.
 
-### 2.2g Phase 2G: EncodeExample Serialization Optimization (CODE DONE, BENCHMARK PENDING)
+### 2.2g Phase 2G: EncodeExample Serialization Optimization (CLOSED — 0% impact)
 
 **Analysis:** Profiling shows `_message.so` (protobuf) at 29-43% of make_examples CPU — but this covers ALL protobuf ops in the process (pybind11 proto conversions, Read access, Variant field access), not just `EncodeExample` serialization. Function-level breakdown unavailable (Docker strips debug symbols).
 
 **Investigated and rejected:**
 - **Protobuf arena allocation:** Tested `Arena::CreateMessage<tensorflow::Example>(arena)` — 0% impact on Linux ARM64 (wall -0.2%, cache misses -0.5%, both within noise). Reverted. The `_message.so` share is dominated by varint serialization and proto field access, not allocation. See `docs/protobuf-serialization-notes.md` for full benchmark data.
 - **SerializeToArray swap:** `SerializeToString` already does single allocation internally. Switching to `SerializeToArray` saves one `resize()` call = 0.008% of runtime.
+- **Direct TFRecord serialization:** Implemented (ee9a910d). Bypasses `tensorflow::Example` proto entirely — writes protobuf wire format bytes directly via `CodedOutputStream`. Eliminates one ~154KB image copy per example. Benchmarked on both Graviton3 (34.59s vs 34.65s, -0.2%) and Oracle A2 (44.75s vs 43.82s, +2.1% noise). **0% measurable impact** — the ~20µs/example savings from one memcpy is far below the noise floor. The `_message.so` share is dominated by Read/Variant proto operations and pybind11 boundary crossings, not Example serialization.
 
-**Changes made:**
-1. **`std::ostringstream` → `absl::StrCat`** (make_examples_native.cc:427-428): Variant range string formatting. `ostringstream` has locale overhead; `absl::StrCat` is 5-10x faster for simple concatenation.
-2. **Reusable pileup buffer** (make_examples_native.cc:417-421, make_examples_native.h:274-276): Added `mutable std::vector<unsigned char> encode_buffer_` member to `ExamplesGenerator`. Eliminates ~80K malloc/free cycles of ~154KB buffers per genome. After first call, `resize()` is no-op (same image dimensions). `memset` zeroing retained (FillPileupArray may not write all pixels).
+**Changes retained (code is cleaner):**
+1. **`std::ostringstream` → `absl::StrCat`** (make_examples_native.cc): Variant range string formatting.
+2. **Reusable pileup buffer** (make_examples_native.cc/h): Persistent `encode_buffer_` member eliminates ~80K malloc/free cycles of ~154KB buffers per genome.
+3. **Direct wire format serialization** (make_examples_native.cc): Removes dependency on `tensorflow/core/example/{example,feature}.pb.h`. Uses `CodedOutputStream` to write tf::Example wire bytes directly from raw data.
 
-**Baseline (Oracle A2, chr20:10M-11M, 2878 examples, 3 runs):** 45.30s ± 0.02s. "After" measurement requires Docker image rebuild. See `docs/protobuf-serialization-notes.md`.
+**Benchmark (2026-03-07, chr20:10M-11M, 2878 examples, 3 runs each):**
 
-**Future opportunity:** Direct TFRecord serialization bypassing `tf::Example` proto (similar to `stream_examples.cc` shared memory path). Would eliminate one ~154KB copy per candidate. Estimated 2-5% ME speedup. Not implemented — requires byte-for-byte wire format validation.
+| Platform | Baseline (proto) | Direct serial | Delta |
+|----------|-----------------|---------------|-------|
+| Graviton3 (BF16+jemalloc) | 34.65s ± 0.08s | 34.59s ± 0.08s | -0.2% (noise) |
+| Oracle A2 (Eigen+jemalloc) | 43.82s ± 0.98s | 44.75s ± 0.33s | +2.1% (noise) |
+
+**Conclusion:** The EncodeExample serialization path is fully optimized. The protobuf bottleneck in `_message.so` is NOT in Example creation — it's in Read/Variant proto field access and pybind11 boundary crossings across the entire make_examples pipeline. No further optimization is possible without architectural changes (moving proto access into C++).
 
 ### 2.3 EfficientNet-B3 Model (DEAD END)
 
@@ -440,7 +447,7 @@ Oracle A2's sequential CV (283s at 32 ORT threads) wastes 16 threads' worth of G
 | jemalloc (`DV_USE_JEMALLOC=1`) | **ME -14-17%, CV ~0%, Wall -7-9%** | **VERIFIED** | Graviton3: 487→443s (2 runs). Oracle A2: 584→544s (4 runs). Universal ARM64 benefit. |
 | **Parallel call_variants (4-way)** | **CV 2.0-2.5x faster** | **DONE** | Graviton4: CV 128→61s (2.10x). Graviton3: CV 141→74s (1.90x). Oracle A2: CV 283→114s (2.47x). |
 | ONNX inter-op parallelism | **No improvement** | **DONE** | intra-op GEMM dominates; inter-op hurts |
-| EncodeExample: ostringstream→StrCat + buffer reuse | ME TBD (est. 1-3%) | **CODE DONE, BENCHMARK PENDING** | Baseline: 45.30s±0.02s (Oracle A2, 1MB). See `docs/protobuf-serialization-notes.md` |
+| EncodeExample: StrCat + buffer reuse + direct serial | **0%** | **CLOSED** | G3: 34.59 vs 34.65s (-0.2%); A2: 44.75 vs 43.82s (+2.1% noise). See `docs/protobuf-serialization-notes.md` |
 | Protobuf arena allocation (tf::Example) | **0%** | **CLOSED** | Tested and reverted. Wall -0.2%, cache -0.5% (noise). See `docs/protobuf-serialization-notes.md` |
 | KMP_AFFINITY + system allocator | **30% REGRESSION** | **REVERTED** | Do not re-attempt |
 | ~~EfficientNet-B3~~ | **3x SLOWER** | **DEAD END** | Depthwise separable conv penalty |
@@ -581,6 +588,7 @@ These optimizations were investigated on macOS and found to have zero impact. Th
 | **fast_pipeline on Oracle A2 32-vCPU** | **<1% improvement, PP broken** | CV stalls on streaming, PP fails on CVO ordering. Sequential 32 shards (489s) is better than fast_pipeline (483s wall, no VCF) |
 | **INT8 ONNX CV scaling beyond 16 threads** | **No improvement** | 0.358 s/100 at 16 threads, 0.384 s/100 at 32 threads with 16 shards. ORT GEMM parallelism saturates at ~16 threads |
 | **ONNX inter-op parallelism (inter_op_threads > 1)** | **No improvement** | Tested intra/inter splits (28/2, 24/4, 20/6, 16/8, 16/16). All equal or worse than 32/1 baseline. InceptionV3 branches don't benefit from inter-op threading |
+| **Direct TFRecord serialization (bypass tf::Example)** | **0%** | Writes protobuf wire format directly via CodedOutputStream. Eliminates one 154KB image copy per example. G3: -0.2%, A2: +2.1% (both noise). The `_message.so` bottleneck is Read/Variant proto ops, not Example serialization |
 
 ### What DOES Matter (Profile First)
 

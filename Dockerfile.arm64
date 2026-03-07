@@ -21,7 +21,6 @@ ARG FROM_IMAGE=arm64v8/ubuntu:24.04
 ARG PYTHON_VERSION=3.10
 ARG DV_GPU_BUILD=0
 ARG VERSION=1.9.0
-ARG TF_ENABLE_ONEDNN_OPTS=1
 
 FROM ${FROM_IMAGE} AS builder
 LABEL maintainer="https://github.com/antomicblitz/deepvariant-linux-arm64/issues"
@@ -61,11 +60,14 @@ FROM ${FROM_IMAGE}
 ARG DV_GPU_BUILD
 ARG VERSION
 ARG PYTHON_VERSION
-ARG TF_ENABLE_ONEDNN_OPTS
 ENV DV_GPU_BUILD=${DV_GPU_BUILD}
 ENV VERSION=${VERSION}
 ENV PYTHON_VERSION=${PYTHON_VERSION}
-ENV TF_ENABLE_ONEDNN_OPTS=${TF_ENABLE_ONEDNN_OPTS}
+# TF_ENABLE_ONEDNN_OPTS intentionally NOT set here.
+# The docker_entrypoint.sh auto-detects BF16 and sets it appropriately:
+#   BF16 detected (Graviton3+): ON  — BFMMLA acceleration
+#   No BF16 (N1, AmpereOne):    OFF — avoids 29% ME overhead / SIGILL
+# Override: docker run -e TF_ENABLE_ONEDNN_OPTS=1 ...
 ENV PIP_BREAK_SYSTEM_PACKAGES=1
 
 WORKDIR /opt/
@@ -211,7 +213,7 @@ RUN chmod -R +r /opt/smallmodels/ont_r104/*
 ENV PATH="$PATH:/opt/deepvariant/bin"
 
 RUN apt-get -y update && \
-  apt-get install -y parallel python3-pip libjemalloc2 && \
+  apt-get install -y parallel python3-pip libjemalloc2 wget && \
   PATH="${HOME}/.local/bin:$PATH" python3 -m pip install absl-py==0.13.0 && \
   apt-get clean autoclean && \
   apt-get autoremove -y --purge && \
@@ -224,6 +226,12 @@ RUN PATH="${HOME}/.local/bin:$PATH" pip3 install tf2onnx onnxruntime
 RUN python3 -m tf2onnx.convert --saved-model /opt/models/wgs --output /opt/models/wgs/model.onnx --opset 17 && \
     python3 -m tf2onnx.convert --saved-model /opt/models/wes --output /opt/models/wes/model.onnx --opset 17 && \
     python3 -m tf2onnx.convert --saved-model /opt/models/pacbio --output /opt/models/pacbio/model.onnx --opset 17
+
+# Download pre-validated INT8 WGS model (SNP F1=0.9978, INDEL F1=0.9962).
+# 21 MB vs 84 MB FP32. Optimal on non-BF16 platforms (2.3x over FP32).
+# Entrypoint auto-selects this when BF16 is not available.
+RUN wget -q -O /opt/models/wgs/model_int8_static.onnx \
+      https://github.com/antomicblitz/deepvariant-linux-arm64/releases/download/v1.9.0-arm64.5/model_int8_static.onnx
 
 # Scripts: entrypoint, autoconfig, parallel CV wrapper, quantization, ONNX conversion
 COPY scripts/docker_entrypoint.sh /opt/deepvariant/bin/docker_entrypoint.sh

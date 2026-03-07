@@ -245,11 +245,13 @@ _CALL_VARIANTS_EXTRA_ARGS = flags.DEFINE_string(
 )
 _USE_ONNX = flags.DEFINE_boolean(
     'use_onnx',
-    False,
+    os.environ.get('DV_USE_ONNX', '0') == '1',
     'Use ONNX Runtime for call_variants inference instead of TensorFlow. '
     'Required for INT8 quantized models (2.3x over ONNX FP32). On Graviton3+ '
     'with BF16, TF+OneDNN is faster — use INT8 ONNX on non-BF16 platforms. '
-    'Automatically resolves the ONNX model path based on --model_type.',
+    'Auto-enabled by the Docker entrypoint on non-BF16 ARM64 CPUs. '
+    'Automatically resolves the ONNX model path based on --model_type, '
+    'preferring INT8 (model_int8_static.onnx) over FP32 (model.onnx).',
 )
 # Optional flag for postprocess variants
 _POSTPROCESS_CPUS = flags.DEFINE_integer(
@@ -559,9 +561,12 @@ def call_variants_command(
         'OpenVINO is not installed by default in DeepVariant '
         'Docker images. Please rerun without use_openvino flag.'
     )
-  # ONNX Runtime inference (ARM64 acceleration)
+  # ONNX Runtime inference (ARM64 acceleration).
+  # Prefer INT8 model (2.3x faster) over FP32 if available.
   if _USE_ONNX.value:
-    onnx_model_path = model_ckpt + '/model.onnx'
+    int8_path = model_ckpt + '/model_int8_static.onnx'
+    fp32_path = model_ckpt + '/model.onnx'
+    onnx_model_path = int8_path if os.path.exists(int8_path) else fp32_path
     command.extend(['--use_onnx', '--onnx_model', '"{}"'.format(onnx_model_path)])
   # Extend the command with all items in extra_args.
   command = _extend_command_by_args_dict(

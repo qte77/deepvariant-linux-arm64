@@ -53,18 +53,38 @@ The `tensorflow::Example` proto in `EncodeExample()` was moved to arena allocati
 
 Replacing with `SerializeToArray` into a pre-allocated buffer only skips step 2's single `resize()`. For a ~154KB Example proto with ~80K candidates, this saves ~16ms against a 200+ second runtime (0.008%). Not worth the complexity.
 
-### Direct TFRecord Serialization (Future Opportunity)
+### Direct TFRecord Serialization (IMPLEMENTED)
 
-The `stream_examples.cc` path already bypasses `tensorflow::Example` entirely — it writes raw bytes (pileup image, variant, alt_alleles) directly to shared memory via `WriteBytesToShm()`.
+Bypasses `tensorflow::Example` proto object entirely. Writes the protobuf wire
+format bytes directly from raw data using `CodedOutputStream`.
 
-A similar approach for the TFRecord path could:
-1. Pre-compute total byte size (fixed header + image_size + variant_size + small fields)
-2. Write protobuf tags and length prefixes directly using `CodedOutputStream`
-3. Copy image data directly from ImageRow pointers into the output buffer
+**What changed:** In `EncodeExample()`, the `tensorflow::Example` construction
+(7-9 map insertions, BytesList/Int64List sub-message creation) and
+`SerializeToString()` call are replaced with a two-phase approach:
+1. Compute total serialized size arithmetically (no proto tree walk)
+2. Allocate output string, write all bytes in one linear pass
 
-This would eliminate one full copy of the ~154KB pileup image per candidate (currently: ImageRow → `encode_buffer_` → Example proto internal buffer → serialized output). Estimated savings: 2-5% of make_examples wall time.
+**What this eliminates:**
+- ~20 protobuf sub-message object creations per example
+- One 154KB copy of the image data (was: encode_buffer_ → BytesList internal
+  buffer → output string; now: encode_buffer_ → output string directly)
+- The `ByteSizeLong()` + `SerializePartialToArray()` traversals
+- 8+ hash map lookups into the Feature map
+- `#include <sstream>`, `tensorflow/core/example/example.pb.h`, `feature.pb.h`
 
-**Not implemented yet** — requires byte-for-byte validation against the proto-based path and careful protobuf wire format handling.
+**Wire format correctness:** Features are emitted in alphabetical key order
+(proto3 deterministic map serialization order). Wire tags verified against
+`third_party/nucleus/protos/feature.proto` and `example.proto`.
+
+**Validation:** Roundtrip parse test (parse direct output as `tf.train.Example`,
+verify all features) + full pipeline VCF comparison. Byte-for-byte comparison
+with proto-based path requires deterministic serialization mode
+(`SetSerializationDeterministic(true)`) because default `SerializeToString()`
+uses hash table iteration order.
+
+**Estimated impact:** ~20µs per example (one 154KB memcpy saved). On chr20:10M-11M
+(2878 examples, 45.3s): ~0.13%. On full chr20 ME (~200s, 80K examples): ~0.8%.
+**Benchmark pending** — requires Docker image rebuild on ARM64.
 
 ## Changes Made
 
@@ -91,7 +111,9 @@ Measured on Oracle A2 (AmpereOne, 16 OCPU / 32 vCPU), `TF_ENABLE_ONEDNN_OPTS=0`,
 | 3 | 45.307s |
 | **Mean** | **45.30s ± 0.02s** |
 
-**"After" measurement pending** — requires Docker image rebuild (C++ changes compile into `make_examples_native.so` inside Bazel-built zip). Will be measured during next image rebuild cycle.
+**"After" measurement pending** — requires Docker image rebuild (C++ changes
+compile into `make_examples_native.so` inside Bazel-built zip). Includes both
+buffer reuse (df3e13d9) and direct TFRecord serialization changes.
 
 ## How to Verify
 

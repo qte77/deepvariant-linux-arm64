@@ -36,7 +36,6 @@
 #include <cstdint>
 #include <cstring>
 #include <memory>
-#include <sstream>
 #include <string>
 #include <unordered_map>
 #include <utility>
@@ -53,6 +52,8 @@
 #include "absl/strings/str_cat.h"
 #include "absl/strings/string_view.h"
 #include "absl/types/span.h"
+#include "google/protobuf/io/coded_stream.h"
+#include "google/protobuf/io/zero_copy_stream_impl_lite.h"
 #include "third_party/nucleus/io/example_writer.h"
 #include "third_party/nucleus/io/reference.h"
 #include "third_party/nucleus/protos/fasta.pb.h"
@@ -60,8 +61,8 @@
 #include "third_party/nucleus/protos/struct.pb.h"
 #include "third_party/nucleus/util/proto_ptr.h"
 #include "third_party/nucleus/util/utils.h"
-#include "tensorflow/core/example/example.pb.h"
-#include "tensorflow/core/example/feature.pb.h"
+// tensorflow/core/example/example.pb.h and feature.pb.h are no longer needed:
+// EncodeExample writes protobuf wire format directly via CodedOutputStream.
 #include "re2/re2.h"
 
 namespace learning {
@@ -393,6 +394,106 @@ std::string EncodeVariant(const Variant& variant, const VariantLabel* label) {
   return encoded_variant;
 }
 
+// --- Direct TFRecord wire format helpers ---
+// These write protobuf wire format bytes for tf::Example directly, bypassing
+// the tensorflow::Example proto object. Eliminates one ~154KB image copy per
+// example and avoids proto object creation / SerializeToString traversal.
+//
+// Wire format reference (from feature.proto / example.proto):
+//   Example.features (field 1) → tag 0x0A
+//   Features.feature map entries (field 1) → tag 0x0A per MapEntry
+//   MapEntry.key (field 1) → tag 0x0A, MapEntry.value (field 2) → tag 0x12
+//   Feature.bytes_list (field 1) → tag 0x0A
+//   Feature.int64_list (field 3) → tag 0x1A
+//   BytesList.value (field 1) → tag 0x0A
+//   Int64List.value (field 1, packed) → tag 0x0A
+
+using ::google::protobuf::io::CodedOutputStream;
+
+inline int VarintSize32(uint32_t value) {
+  return CodedOutputStream::VarintSize32(value);
+}
+
+inline int VarintSize64(uint64_t value) {
+  return CodedOutputStream::VarintSize64(value);
+}
+
+// Returns the wire size of a BytesList MapEntry (outer tag+len NOT included).
+int BytesFeatureEntryContentSize(absl::string_view key, size_t data_len) {
+  // BytesList.value: tag(1) + varint(data_len) + data
+  int bl_val = 1 + VarintSize32(data_len) + data_len;
+  // Feature.bytes_list: tag(1) + varint(bl_val) + bl_val
+  int feat = 1 + VarintSize32(bl_val) + bl_val;
+  // MapEntry: key_tag(1) + varint(key_len) + key + val_tag(1) + varint(feat) + feat
+  return 1 + VarintSize32(key.size()) + key.size()
+       + 1 + VarintSize32(feat) + feat;
+}
+
+// Returns the wire size of an Int64List MapEntry (outer tag+len NOT included).
+int Int64FeatureEntryContentSize(absl::string_view key,
+                                  absl::Span<const int64_t> vals) {
+  int packed = 0;
+  for (int64_t v : vals) packed += VarintSize64(static_cast<uint64_t>(v));
+  int i64_list = 1 + VarintSize32(packed) + packed;
+  int feat = 1 + VarintSize32(i64_list) + i64_list;
+  return 1 + VarintSize32(key.size()) + key.size()
+       + 1 + VarintSize32(feat) + feat;
+}
+
+void WriteBytesFeatureEntry(CodedOutputStream* cos, absl::string_view key,
+                            const void* data, size_t data_len) {
+  int bl_val = 1 + VarintSize32(data_len) + data_len;
+  int feat = 1 + VarintSize32(bl_val) + bl_val;
+  int entry = 1 + VarintSize32(key.size()) + key.size()
+            + 1 + VarintSize32(feat) + feat;
+  // Features.feature MapEntry (field 1, wire type 2)
+  cos->WriteTag(0x0A);
+  cos->WriteVarint32(entry);
+  // MapEntry.key (field 1)
+  cos->WriteTag(0x0A);
+  cos->WriteVarint32(key.size());
+  cos->WriteRaw(key.data(), key.size());
+  // MapEntry.value = Feature (field 2)
+  cos->WriteTag(0x12);
+  cos->WriteVarint32(feat);
+  // Feature.bytes_list (field 1)
+  cos->WriteTag(0x0A);
+  cos->WriteVarint32(bl_val);
+  // BytesList.value (field 1)
+  cos->WriteTag(0x0A);
+  cos->WriteVarint32(data_len);
+  cos->WriteRaw(data, data_len);
+}
+
+void WriteInt64FeatureEntry(CodedOutputStream* cos, absl::string_view key,
+                            absl::Span<const int64_t> vals) {
+  int packed = 0;
+  for (int64_t v : vals) packed += VarintSize64(static_cast<uint64_t>(v));
+  int i64_list = 1 + VarintSize32(packed) + packed;
+  int feat = 1 + VarintSize32(i64_list) + i64_list;
+  int entry = 1 + VarintSize32(key.size()) + key.size()
+            + 1 + VarintSize32(feat) + feat;
+  // Features.feature MapEntry (field 1, wire type 2)
+  cos->WriteTag(0x0A);
+  cos->WriteVarint32(entry);
+  // MapEntry.key (field 1)
+  cos->WriteTag(0x0A);
+  cos->WriteVarint32(key.size());
+  cos->WriteRaw(key.data(), key.size());
+  // MapEntry.value = Feature (field 2)
+  cos->WriteTag(0x12);
+  cos->WriteVarint32(feat);
+  // Feature.int64_list (field 3)
+  cos->WriteTag(0x1A);
+  cos->WriteVarint32(i64_list);
+  // Int64List.value (field 1, packed)
+  cos->WriteTag(0x0A);
+  cos->WriteVarint32(packed);
+  for (int64_t v : vals) {
+    cos->WriteVarint64(static_cast<uint64_t>(v));
+  }
+}
+
 }  // namespace
 
 std::string ExamplesGenerator::EncodeExample(
@@ -429,52 +530,132 @@ std::string ExamplesGenerator::EncodeExample(
   std::string variant_range_encoded = absl::StrCat(
       variant.reference_name(), ":", variant.start() + 1, "-", variant.end());
 
-  // Encode features of the example.
-  tensorflow::Example example;
+  // Encode features directly to protobuf wire format, bypassing tf::Example
+  // proto object creation. Eliminates one ~154KB image copy per example.
   enum EncodedVariantType variant_type = EncodedVariantType(variant);
-  (*example.mutable_features()->mutable_feature())["locus"]
-      .mutable_bytes_list()
-      ->add_value(std::move(variant_range_encoded));
-  (*example.mutable_features()->mutable_feature())["variant/encoded"]
-      .mutable_bytes_list()
-      ->add_value(EncodeVariant(variant, label.get()));
-  (*example.mutable_features()->mutable_feature())["variant_type"]
-      .mutable_int64_list()
-      ->add_value(static_cast<int64_t>(variant_type));
-  (*example.mutable_features()->mutable_feature())["alt_allele_indices/encoded"]
-      .mutable_bytes_list()
-      ->add_value(alt_indices_encoded);
-  (*example.mutable_features()->mutable_feature())["image/encoded"]
-      .mutable_bytes_list()
-      ->add_value(encode_buffer_.data(), encode_buffer_.size());
-  for (auto dim : image_shape) {
-    (*example.mutable_features()->mutable_feature())["image/shape"]
-        .mutable_int64_list()
-        ->add_value(dim);
-  }
-  (*example.mutable_features()->mutable_feature())["sequencing_type"]
-      .mutable_int64_list()
-      ->add_value(options_.pic_options().sequencing_type());
+  std::string encoded_variant = EncodeVariant(variant, label.get());
+  int64_t variant_type_val = static_cast<int64_t>(variant_type);
+  int64_t seq_type_val = options_.pic_options().sequencing_type();
 
-  // Set the label if it is provided.
+  // Prepare int64 arrays for Int64List features.
+  std::array<int64_t, 3> shape_vals = {
+      static_cast<int64_t>(image_shape[0]),
+      static_cast<int64_t>(image_shape[1]),
+      static_cast<int64_t>(image_shape[2])};
+
+  // Determine optional features.
   int label_value = 0;
-  if (label != nullptr) {
+  bool has_label = (label != nullptr);
+  if (has_label) {
     label_value = label->LabelForAltAlleles(alt_indices_set);
-    (*example.mutable_features()->mutable_feature())["label"]
-        .mutable_int64_list()
-        ->add_value(label_value);
+  }
+  int64_t label_val = static_cast<int64_t>(label_value);
+
+  bool has_denovo = !options_.denovo_regions_filename().empty() && has_label;
+  int64_t denovo_val = has_denovo ? static_cast<int64_t>(label->is_denovo) : 0;
+
+  // Phase 1: Compute total serialized size.
+  // Features are emitted in alphabetical key order (proto3 map sort order).
+  int features_content = 0;
+
+  // 1. "alt_allele_indices/encoded" (BytesList)
+  int e_alt = BytesFeatureEntryContentSize(
+      "alt_allele_indices/encoded", alt_indices_encoded.size());
+  features_content += 1 + VarintSize32(e_alt) + e_alt;
+
+  // 2. "denovo_label" (Int64List, optional)
+  int e_denovo = 0;
+  if (has_denovo) {
+    absl::Span<const int64_t> dv(&denovo_val, 1);
+    e_denovo = Int64FeatureEntryContentSize("denovo_label", dv);
+    features_content += 1 + VarintSize32(e_denovo) + e_denovo;
   }
 
-  // Set de novo feature if de novo regions are provided.
-  if (!options_.denovo_regions_filename().empty() && label != nullptr) {
-    (*example.mutable_features()->mutable_feature())["denovo_label"]
-        .mutable_int64_list()
-        ->add_value(label->is_denovo);
+  // 3. "image/encoded" (BytesList, ~154KB)
+  int e_img = BytesFeatureEntryContentSize(
+      "image/encoded", encode_buffer_.size());
+  features_content += 1 + VarintSize32(e_img) + e_img;
+
+  // 4. "image/shape" (Int64List, 3 values)
+  absl::Span<const int64_t> shape_span(shape_vals.data(), shape_vals.size());
+  int e_shape = Int64FeatureEntryContentSize("image/shape", shape_span);
+  features_content += 1 + VarintSize32(e_shape) + e_shape;
+
+  // 5. "label" (Int64List, optional)
+  int e_label = 0;
+  if (has_label) {
+    absl::Span<const int64_t> lv(&label_val, 1);
+    e_label = Int64FeatureEntryContentSize("label", lv);
+    features_content += 1 + VarintSize32(e_label) + e_label;
   }
 
-  // Example is serialized to a string before it is written to a TFRecord.
+  // 6. "locus" (BytesList)
+  int e_locus = BytesFeatureEntryContentSize(
+      "locus", variant_range_encoded.size());
+  features_content += 1 + VarintSize32(e_locus) + e_locus;
+
+  // 7. "sequencing_type" (Int64List)
+  absl::Span<const int64_t> st(&seq_type_val, 1);
+  int e_seq = Int64FeatureEntryContentSize("sequencing_type", st);
+  features_content += 1 + VarintSize32(e_seq) + e_seq;
+
+  // 8. "variant/encoded" (BytesList)
+  int e_var = BytesFeatureEntryContentSize(
+      "variant/encoded", encoded_variant.size());
+  features_content += 1 + VarintSize32(e_var) + e_var;
+
+  // 9. "variant_type" (Int64List)
+  absl::Span<const int64_t> vt(&variant_type_val, 1);
+  int e_vtype = Int64FeatureEntryContentSize("variant_type", vt);
+  features_content += 1 + VarintSize32(e_vtype) + e_vtype;
+
+  // Example.features: tag(1) + varint(features_content) + features_content
+  int example_size = 1 + VarintSize32(features_content) + features_content;
+
+  // Phase 2: Allocate and write.
   std::string encoded_example;
-  example.SerializeToString(&encoded_example);
+  encoded_example.resize(example_size);
+
+  google::protobuf::io::ArrayOutputStream aos(
+      encoded_example.data(), example_size);
+  google::protobuf::io::CodedOutputStream cos(&aos);
+
+  // Example.features (field 1)
+  cos.WriteTag(0x0A);
+  cos.WriteVarint32(features_content);
+
+  // Write features in alphabetical key order:
+  // 1. alt_allele_indices/encoded
+  WriteBytesFeatureEntry(&cos, "alt_allele_indices/encoded",
+                         alt_indices_encoded.data(),
+                         alt_indices_encoded.size());
+  // 2. denovo_label (optional)
+  if (has_denovo) {
+    absl::Span<const int64_t> dv(&denovo_val, 1);
+    WriteInt64FeatureEntry(&cos, "denovo_label", dv);
+  }
+  // 3. image/encoded
+  WriteBytesFeatureEntry(&cos, "image/encoded",
+                         encode_buffer_.data(), encode_buffer_.size());
+  // 4. image/shape
+  WriteInt64FeatureEntry(&cos, "image/shape", shape_span);
+  // 5. label (optional)
+  if (has_label) {
+    absl::Span<const int64_t> lv(&label_val, 1);
+    WriteInt64FeatureEntry(&cos, "label", lv);
+  }
+  // 6. locus
+  WriteBytesFeatureEntry(&cos, "locus",
+                         variant_range_encoded.data(),
+                         variant_range_encoded.size());
+  // 7. sequencing_type
+  WriteInt64FeatureEntry(&cos, "sequencing_type", st);
+  // 8. variant/encoded
+  WriteBytesFeatureEntry(&cos, "variant/encoded",
+                         encoded_variant.data(), encoded_variant.size());
+  // 9. variant_type
+  WriteInt64FeatureEntry(&cos, "variant_type", vt);
+
   UpdateStats(variant_type, label.get(), label_value, stats);
   return encoded_example;
 }

@@ -2,7 +2,7 @@
 
 [![release](https://img.shields.io/badge/base-v1.9.0-green?logo=github)](https://github.com/google/deepvariant/releases)
 [![platform](https://img.shields.io/badge/platform-Linux%20ARM64-blue?logo=linux)](https://en.wikipedia.org/wiki/AArch64)
-[![accuracy](https://img.shields.io/badge/SNP%20F1-0.9978-success)](#accuracy)
+[![accuracy](https://img.shields.io/badge/SNP%20F1-0.9961%20(full%20genome)-success)](#accuracy--full-genome-validation)
 [![license](https://img.shields.io/badge/license-BSD--3-blue)](#license)
 
 > Fork of [google/deepvariant](https://github.com/google/deepvariant) v1.9.0. Tags: `v{upstream}-arm64.{n}`.
@@ -132,10 +132,12 @@ There are four distinct results here, with different levels of novelty.
 
 The DeepVariant InceptionV3 model (84 MB FP32) was quantized to INT8 using ONNX Runtime static quantization with calibration data drawn from real genomic TFRecords. The quantized model is **74% smaller (21 MB)** and **2.3x faster** at inference than FP32 ONNX — and loses nothing in accuracy:
 
-| Metric | FP32 | BF16 | INT8 ONNX |
-|--------|------|------|-----------|
-| SNP F1 | 0.9977 | 0.9977 | **0.9978** |
-| INDEL F1 | 0.9961 | 0.9961 | **0.9962** |
+| Metric | FP32 | BF16 | INT8 ONNX | INT8 Full Genome |
+|--------|------|------|-----------|------------------|
+| SNP F1 | 0.9977 | 0.9977 | **0.9978** | **0.9961** |
+| INDEL F1 | 0.9961 | 0.9961 | **0.9962** | **0.9956** |
+
+> chr20 results validated with `rtg vcfeval` on GIAB HG003 v4.2.1 (all rows). Full Genome column: 30x WGS HG003, all chromosomes, on AWS c8g.8xlarge (32 vCPU Graviton4). Completed in ~2h17m — 27% faster than chr20 extrapolation.
 
 Post-training INT8 quantization typically degrades accuracy by 0.6-3% on vision CNNs. That it doesn't here — not even in the difficult regions where quantization characteristically fails — is the finding. Stratified GIAB validation confirms:
 
@@ -180,7 +182,7 @@ Built the full EfficientNet-B3 training pipeline — then measured it running **
 
 ## How much does it matter at scale?
 
-The cost numbers below use the formula `chr20_wall_s x 48.1 / 3600 x $/hr` — a standard chr20-to-WGS projection, not a direct 30x WGS measurement. End-to-end validation is on the roadmap.
+The cost numbers below use the formula `chr20_wall_s x 48.1 / 3600 x $/hr` — a standard chr20-to-WGS projection. Full 30x WGS end-to-end validation on Graviton4 (c8g.8xlarge) completed in **2h17m** — 27% faster than this projection, confirming the estimate is conservative.
 
 | Study scale | x86 reference ($5.01) | Oracle A1 ($0.80) | Hetzner ($0.33+) | Savings vs. x86 |
 |-------------|----------------------|-------------------|-----------------|-----------------|
@@ -294,7 +296,21 @@ docker pull ghcr.io/antomicblitz/deepvariant-arm64:v1.9.0-arm64.5
 
 ---
 
-## Validate Accuracy
+## Accuracy — Full Genome Validation
+
+**Full 30x WGS** (HG003, GRCh38, all chromosomes) validated on AWS c8g.8xlarge (32 vCPU Graviton4, INT8 ONNX + jemalloc). Accuracy measured with `rtg vcfeval` against GIAB HG003 v4.2.1 truth set:
+
+| Metric | Precision | Recall | F1 | TP | FP | FN |
+|--------|-----------|--------|------|--------|-------|--------|
+| **SNP** | 0.9986 | 0.9936 | **0.9961** | 3,306,123 | 4,571 | 21,357 |
+| **INDEL** | 0.9973 | 0.9938 | **0.9956** | 501,300 | 1,340 | 3,135 |
+| **Overall** | 0.9985 | 0.9936 | **0.9960** | 3,807,423 | 5,911 | 24,492 |
+
+Total PASS variants: 4,813,103 (3,894,025 SNPs + 919,078 INDELs). Wall time: **2 hours 17 minutes** (c8g.8xlarge, 32 vCPU, $1.36/hr).
+
+---
+
+## Reproduce These Results
 
 Reproduce the accuracy numbers from this README on your own hardware.
 
@@ -444,7 +460,7 @@ Full build: several hours on an 8-core machine (~2273 Bazel actions).
 - [x] jemalloc integration (14-17% make_examples speedup)
 - [x] Autoconfig for CPU detection
 - [x] Hetzner CAX41 benchmark ($0.33/genome)
-- [ ] **Full 30x WGS end-to-end validation** — chr20 cost projections need this
+- [x] **Full 30x WGS end-to-end validation** — INT8 ONNX, GIAB HG003, all chromosomes (SNP F1=0.9961, INDEL F1=0.9956, 2h17m on Graviton4 32 vCPU)
 - [ ] Edge device validation (Jetson, RK3588)
 - [ ] Nextflow / Snakemake integration
 - [ ] WES model validation on ARM64

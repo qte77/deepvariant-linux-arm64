@@ -9,9 +9,9 @@
 
 **The gold standard in variant calling. Now on ARM64. For less than the price of a chewing gum per genome.**
 
-Google's [DeepVariant](https://rdcu.be/7Dhl) (Poplin et al., *Nature Biotechnology* 2018) achieves the highest SNP accuracy of any open-source variant caller. It also had no Linux ARM64 build — until this fork. Run it on a $0.16/hr Oracle A1 instance and get the same accuracy as a well-equipped sequencing center, at **$0.80/genome on dedicated ARM64 vCPUs** — or **$0.33/genome on a Hetzner CAX41 shared instance** in the EU.
+Google's [DeepVariant](https://rdcu.be/7Dhl) (Poplin et al., *Nature Biotechnology* 2018) achieves the highest SNP accuracy of any open-source variant caller. It also had no Linux ARM64 build — until this fork. Run it on a $0.16/hr Oracle A1 instance and get near-reference accuracy (SNP F1 0.9961 vs x86's ~0.9996 on full 30x WGS) at **$0.80/genome on dedicated ARM64 vCPUs** — or **$0.33/genome on a Hetzner CAX41 shared instance** in the EU.
 
-At [UK Biobank](https://doi.org/10.1038/s41586-025-09272-9) scale (490,640 genomes), that difference vs. the x86 reference cost is **$2.3 million** — enough to fund the sequencing of ~4,600 additional genomes. For the [proposed Three Million African Genomes project](https://doi.org/10.1038/d41586-021-00313-7), the gap is $15M vs. $1M.
+At [UK Biobank](https://doi.org/10.1038/s41586-025-09272-9) scale (490,640 genomes), the compute cost difference vs. the x86 reference is **$2.3 million** — enough to fund the sequencing of ~4,600 additional genomes. For the [proposed Three Million African Genomes project](https://doi.org/10.1038/d41586-021-00313-7), the gap is $15M vs. $1M. The trade-off is a small accuracy reduction (SNP F1 0.9961 vs ~0.9996 on x86) and longer wall time — acceptable for population-scale GWAS, where cost dominates.
 
 ---
 
@@ -130,14 +130,16 @@ There are four distinct results here, with different levels of novelty.
 
 ### 1. INT8 quantization without accuracy loss *(the most novel result)*
 
-The DeepVariant InceptionV3 model (84 MB FP32) was quantized to INT8 using ONNX Runtime static quantization with calibration data drawn from real genomic TFRecords. The quantized model is **74% smaller (21 MB)** and **2.3x faster** at inference than FP32 ONNX — and loses nothing in accuracy:
+The DeepVariant InceptionV3 model (84 MB FP32) was quantized to INT8 using ONNX Runtime static quantization with calibration data drawn from real genomic TFRecords. The quantized model is **74% smaller (21 MB)** and **2.3x faster** at inference than FP32 ONNX — with no accuracy loss *from quantization itself*:
 
-| Metric | FP32 | BF16 | INT8 ONNX | INT8 Full Genome | INT8 WES |
+| Metric | FP32 (chr20) | BF16 (chr20) | INT8 ONNX (chr20) | INT8 Full Genome | INT8 WES |
 |--------|------|------|-----------|------------------|----------|
 | SNP F1 | 0.9977 | 0.9977 | **0.9978** | **0.9961** | **0.9931** |
 | INDEL F1 | 0.9961 | 0.9961 | **0.9962** | **0.9956** | **0.9738** |
 
 > chr20 results validated with `rtg vcfeval` on GIAB HG003 v4.2.1 (all rows). Full Genome column: 30x WGS HG003, all chromosomes, on AWS c8g.8xlarge (32 vCPU Graviton4). Completed in ~2h17m — 27% faster than chr20 extrapolation. WES column: HG003 IDT exome 100x, all chromosomes, same platform. WES FP32 BF16 baseline: SNP F1=0.9930, INDEL F1=0.9776 — INT8 matches within noise.
+>
+> **Note on full-genome accuracy:** The INT8 full genome SNP F1 (0.9961) is lower than both the chr20 result (0.9978) and the x86 reference (~0.9996). The chr20→full genome drop is expected (harder chromosomes contribute more errors), but the gap vs x86 (0.0035 SNP F1) likely reflects differences in the ARM64 build environment (TF version, OneDNN backend, numerical precision paths) rather than INT8 quantization per se — the chr20 INT8 result *matches or exceeds* FP32 and BF16 on the same ARM64 platform.
 
 Post-training INT8 quantization typically degrades accuracy by 0.6-3% on vision CNNs. That it doesn't here — not even in the difficult regions where quantization characteristically fails — is the finding. Stratified GIAB validation confirms:
 
@@ -198,19 +200,21 @@ The cost numbers below use the formula `chr20_wall_s x 48.1 / 3600 x $/hr` — a
 
 ## Compared to alternatives
 
-| Solution | $/genome | Speed (30x WGS) | Accuracy | License | ARM64 |
-|----------|----------|-----------------|----------|---------|-------|
-| Google DeepVariant (96 vCPU x86) | ~$5.01 | ~1.3 hr | SNP F1 >0.997 | Open source | No |
-| Google DeepVariant (n1-standard-16, preemptible) | ~$2.84 | ~5.5 hr | SNP F1 >0.997 | Open source | No |
+| Solution | $/genome | Speed (30x WGS) | Accuracy (SNP F1) | License | ARM64 |
+|----------|----------|-----------------|-------------------|---------|-------|
+| Google DeepVariant (96 vCPU x86) | ~$5.01 | ~1.3 hr | ~0.9996 | Open source | No |
+| Google DeepVariant (n1-standard-16, preemptible) | ~$2.84 | ~5.5 hr | ~0.9996 | Open source | No |
 | Sentieon DNAscope (OCI ARM) | <$1 + license | ~1-2 hr | Comparable | **Proprietary** | Yes |
 | Sentieon DNAscope (AWS Graviton, spot) | ~$0.74 + license | ~1-2 hr | Comparable | **Proprietary** | Yes |
 | NVIDIA Parabricks | <$2 + license | 8-16 min | Comparable | **Proprietary** | No |
-| **This fork — Oracle A1, 4-way CV** | **$0.80** | **~5.0 hr** | **SNP F1 0.9978** | **Open source** | **Yes** |
-| **This fork — Hetzner CAX41, INT8** | **$0.33+** | **~7.7 hr** | **SNP F1 0.9978** | **Open source** | **Yes** |
+| **This fork — Oracle A1, 4-way CV** | **$0.80** | **~5.0 hr** | **0.9961*** | **Open source** | **Yes** |
+| **This fork — Hetzner CAX41, INT8** | **$0.33+** | **~7.7 hr** | **0.9961*** | **Open source** | **Yes** |
 
+> *Full 30x WGS accuracy (all chromosomes, INT8 ONNX). chr20-only is higher (0.9978) due to chr20 being among the easier chromosomes. The 0.0035 gap vs x86 (0.9961 vs ~0.9996) corresponds to ~17K additional missed SNPs genome-wide — clinically irrelevant for most GWAS/population studies, but worth noting for clinical diagnostics.
+>
 > +Hetzner: shared vCPU (~5% throttling variance), EU-only, N=1 for best config. Increase N before citing this number in a paper.
 
-The trade-off is wall time. A Hetzner run takes ~8 hours vs. ~1 hour on a 96-vCPU x86 instance. For batch processing, overnight pipelines, and cost-constrained studies, this is a feature. For clinical turnaround, use GPU-accelerated DeepVariant.
+The trade-off is wall time and a small accuracy gap. A Hetzner run takes ~8 hours vs. ~1 hour on a 96-vCPU x86 instance, with SNP F1 0.35% lower than the x86 reference. For batch processing, overnight pipelines, and cost-constrained studies, this is an acceptable trade-off. For clinical turnaround or maximum accuracy, use GPU-accelerated DeepVariant on x86.
 
 ---
 
@@ -403,10 +407,12 @@ bash scripts/validate_accuracy.sh \
 This pulls the hap.py Docker image (`jmcdani20/hap.py:v0.3.12`) automatically and checks against accuracy gates:
 
 ```
-Expected output:
+Expected output (chr20 only):
   SNP F1:   0.9978  (gate: >= 0.9974)   PASS
   INDEL F1: 0.9962  (gate: >= 0.9940)   PASS
 ```
+
+> These are chr20-only numbers. Full genome accuracy is lower (SNP F1=0.9961, INDEL F1=0.9956) — see [Accuracy — Full Genome Validation](#accuracy--full-genome-validation).
 
 Or use the all-in-one benchmark script:
 

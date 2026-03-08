@@ -6,6 +6,11 @@ Upstream compatibility: google/deepvariant v1.9.0
 ## [Unreleased]
 
 ### Added
+- `Dockerfile.arm64.builder`: standalone builder-stage Dockerfile for native
+  ARM64 Bazel compilation (~1hr native vs ~4hr+ QEMU)
+- `Dockerfile.arm64`: `BUILDER_IMAGE` build-arg defaults to pre-built ghcr.io
+  base; retains inline from-source fallback via `builder-local`
+- CI `build-builder` job: manual workflow_dispatch to rebuild base builder image
 - `docker_entrypoint.sh`: THP via `GLIBC_TUNABLES=glibc.malloc.hugetlb=2`
   (glibc >= 2.35, ~6% SPEC improvement on AArch64, reduces TLB pressure)
 - `docker_entrypoint.sh`: jemalloc `MALLOC_CONF` with background_thread and
@@ -42,6 +47,11 @@ Upstream compatibility: google/deepvariant v1.9.0
 - `.github/dependabot.yaml`: weekly pip dependency updates
 - `.github/PULL_REQUEST_TEMPLATE.md`: structured PR template
 - CI lint-and-typecheck job with `astral-sh/setup-uv` + cache in `arm64-build.yml`
+
+### Changed
+- CI `build-arm64` timeout reduced from 240min to 30min (pre-built builder base)
+- `Dockerfile.arm64` refactored: two-stage build now references external builder
+  image instead of inline Bazel compilation
 
 ### Changed
 - `setup.py` extracted to `scripts/build_proto.py` (standalone proto generation)

@@ -1,37 +1,44 @@
 # Copyright 2019 Google LLC.
 # Modifications Copyright 2024 deepvariant-linux-arm64 contributors.
 #
-# ARM64-specific Dockerfile for DeepVariant.
-# Must be built on an aarch64 host (native build, no cross-compilation).
+# ARM64 runtime Dockerfile for DeepVariant.
+# Uses a pre-built builder image (Bazel binaries) by default for fast CI builds.
 #
-# Build (full from-source, ~10 hours on 8-core ARM64):
+# Default (fast, ~10min): uses pre-built base from ghcr.io
 #   docker build -f docker/Dockerfile.arm64 -t deepvariant-arm64 .
 #
-# Build with GPU support (Jetson):
+# Full from-source (~1hr native ARM64, ~4hr+ QEMU):
 #   docker build -f docker/Dockerfile.arm64 \
-#     --build-arg=FROM_IMAGE=nvcr.io/nvidia/l4t-tensorflow:r35.2.1-tf2.11-py3 \
-#     --build-arg=DV_GPU_BUILD=1 \
+#     --build-arg BUILDER_IMAGE=builder-local \
+#     --build-arg FROM_IMAGE=arm64v8/ubuntu:24.04 \
+#     -t deepvariant-arm64 .
+#
+# With GPU support (Jetson):
+#   docker build -f docker/Dockerfile.arm64 \
+#     --build-arg BUILDER_IMAGE=builder-local \
+#     --build-arg FROM_IMAGE=nvcr.io/nvidia/l4t-tensorflow:r35.2.1-tf2.11-py3 \
+#     --build-arg DV_GPU_BUILD=1 \
 #     -t deepvariant-arm64-gpu .
 #
 # NOTE: Ubuntu 24.04 is required because GCC 13+ is needed for TF 2.13.1
 # compilation. GLIBC 2.38+ binaries cannot run on Ubuntu 22.04.
 # Python 3.10 is installed via deadsnakes PPA (required by TF 2.13.1).
 
+ARG BUILDER_IMAGE=ghcr.io/qte77/deepvariant-linux-arm64:base-builder-v1.9.0
 ARG FROM_IMAGE=arm64v8/ubuntu:24.04
 ARG PYTHON_VERSION=3.10
 ARG DV_GPU_BUILD=0
 ARG VERSION=1.9.0
 
-FROM ${FROM_IMAGE} AS builder
-LABEL maintainer="https://github.com/antomicblitz/deepvariant-linux-arm64/issues"
-
+# --- Builder stage (from-source fallback) ------------------------------------
+# Reason: only used when BUILDER_IMAGE=builder-local; otherwise skipped by Docker
+FROM ${FROM_IMAGE} AS builder-local
 ARG DV_GPU_BUILD
 ARG PYTHON_VERSION
 ENV DV_GPU_BUILD=${DV_GPU_BUILD}
 ENV DV_BIN_PATH=/opt/deepvariant/bin
 ENV PIP_BREAK_SYSTEM_PACKAGES=1
 
-# Install Python 3.10 from deadsnakes PPA (Ubuntu 24.04 ships 3.12)
 RUN apt-get update -qq && \
     apt-get install -qq -y software-properties-common && \
     add-apt-repository -y ppa:deadsnakes/ppa && \
@@ -40,7 +47,6 @@ RUN apt-get update -qq && \
     update-alternatives --install /usr/bin/python3 python3 /usr/bin/python3.10 10 && \
     apt-get clean && rm -rf /var/lib/apt/lists/*
 
-# Copying DeepVariant source code
 COPY . /opt/deepvariant
 
 ARG VERSION
@@ -48,14 +54,15 @@ ENV VERSION=${VERSION}
 
 WORKDIR /opt/deepvariant
 
-# Use ARM64-specific build scripts
-# Note: cryptography+cffi fix between scripts — pip isn't available until
-# after build-prereq installs it, but TF import in build_release needs it.
 RUN chmod +x scripts/build/build-prereq-arm64.sh scripts/build/build_release_binaries_arm64.sh && \
     ./scripts/build/build-prereq-arm64.sh \
     && PATH="${HOME}/.local/bin:${HOME}/bin:${PATH}" pip3 install --ignore-installed cryptography cffi "httplib2<0.22" \
     && PATH="${HOME}/bin:${PATH}" ./scripts/build/build_release_binaries_arm64.sh
 
+# --- Use pre-built or from-source builder ------------------------------------
+FROM ${BUILDER_IMAGE} AS builder
+
+# --- Runtime stage -----------------------------------------------------------
 FROM ${FROM_IMAGE}
 ARG DV_GPU_BUILD
 ARG VERSION

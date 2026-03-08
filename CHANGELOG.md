@@ -6,6 +6,26 @@ Upstream compatibility: google/deepvariant v1.9.0
 ## [Unreleased]
 
 ### Added
+- `docker_entrypoint.sh`: THP via `GLIBC_TUNABLES=glibc.malloc.hugetlb=2`
+  (glibc >= 2.35, ~6% SPEC improvement on AArch64, reduces TLB pressure)
+- `docker_entrypoint.sh`: jemalloc `MALLOC_CONF` with background_thread and
+  metadata_thp — matches run_parallel_cv.sh for consistency
+- `autoconfig.sh`: JSON output now includes `DV_USE_JEMALLOC`, `MALLOC_CONF`,
+  and `GLIBC_TUNABLES` so `DV_AUTOCONFIG=1` auto-enables jemalloc
+- `call_variants.py`: ORT `graph_optimization_level = ORT_ENABLE_ALL` for
+  extended operator fusion (Conv+BN, GEMM+Activation, constant folding)
+
+### Fixed
+- `call_variants.py`: ORT version parse crash on `.post1` suffixes
+  (e.g. `1.17.0.post1` caused `int()` ValueError)
+- `call_variants.py`: `np.ascontiguousarray` wrapping ONNX batch input to
+  prevent silent per-batch copy on non-contiguous tensors
+- `docker_entrypoint.sh`: ONNX auto-selection now warns that ONT/MasSeq/Hybrid
+  models are TF-only (Dockerfile only converts WGS/WES/PacBio to ONNX)
+- `settings_arm64.sh`: removed misleading `TF_ENABLE_ONEDNN_OPTS=1` from
+  build-time settings (runtime env var, no effect during Bazel build)
+
+### Added
 - CLAUDE.md: slim entry point (`@AGENTS.md`), original content preserved in
   `docs/architecture-arm64.md`
 - AGENTS.md: agent behavioral rules, decision framework, dead ends, quality

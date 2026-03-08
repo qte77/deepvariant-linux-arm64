@@ -70,7 +70,7 @@ jobs:
           cache-to: type=gha,mode=max,scope=builder
 
   # Build the runtime image using the pre-built builder base (~10min native).
-  # Reason: native ARM64 runner — no QEMU needed for apt-get, pip, tf2onnx
+  # Reason: native ARM64 runner — no QEMU needed for apt-get, uv, tf2onnx
   # Waits for builder rebuild if triggered via dispatch with rebuild_builder=true
   build-arm64:
     name: Build ARM64 Docker Image
@@ -93,6 +93,13 @@ jobs:
           registry: ${{ env.REGISTRY }}
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Check base builder image exists
+        run: |
+          if ! docker manifest inspect "${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ env.BUILDER_TAG }}" > /dev/null 2>&1; then
+            echo "::error::Base builder image ${{ env.BUILDER_TAG }} not found. Run workflow_dispatch with rebuild_builder=true first."
+            exit 1
+          fi
 
       - name: Docker meta (tags for main and PR branches)
         id: meta

@@ -60,11 +60,9 @@ if [[ "$EUID" = "0" ]]; then
   apt-get update "${APT_ARGS[@]}" > /dev/null
   apt-get install "${APT_ARGS[@]}" sudo > /dev/null
   UV_ARGS=(
-    "--system"
     "--quiet")
 else
   UV_ARGS=(
-    "--system"
     "--quiet")
 fi
 
@@ -79,15 +77,8 @@ wait_for_dpkg_lock
 
 # See https://askubuntu.com/questions/909277.
 sudo -H DEBIAN_FRONTEND=noninteractive apt-get install "${APT_ARGS[@]}" pkg-config zip zlib1g-dev unzip curl git wget > /dev/null
-# On Ubuntu 24.04, python3-distutils doesn't exist; use python3.10-distutils from deadsnakes
-sudo -H apt-get install "${APT_ARGS[@]}" python3-distutils > /dev/null 2>&1 || \
-  sudo -H apt-get install "${APT_ARGS[@]}" python3.10-distutils > /dev/null 2>&1 || true
 
 note_build_stage "Install python3 packaging infrastructure"
-
-# Avoid issue with pip's dependency resolver not accounting for all installed
-# packages.
-sudo -H apt-get install "${APT_ARGS[@]}" "python3-testresources" 2>/dev/null || true
 
 # Fix this error:
 # "error: command 'x86_64-linux-gnu-gcc' failed: No such file or directory"
@@ -95,7 +86,7 @@ sudo -H apt-get install "${APT_ARGS[@]}" "gcc"
 
 # uv is installed via COPY --from in Dockerfiles; verify it's available
 if ! command -v uv &>/dev/null; then
-  echo "ERROR: uv not found. Install via Dockerfile: COPY --from=ghcr.io/astral-sh/uv:latest /uv /usr/local/bin/uv"
+  echo "ERROR: uv not found. Install via Dockerfile: COPY --from=ghcr.io/astral-sh/uv:0.10 /uv /usr/local/bin/uv"
   exit 1
 fi
 
@@ -263,7 +254,7 @@ note_build_stage "Install TensorRT"
 if [[ "${DV_GPU_BUILD}" = "1" ]]; then
   uv pip install "${UV_ARGS[@]}" tensorrt==8.5.3.1
   echo "For debugging:"
-  uv pip show --system tensorrt
+  uv pip show tensorrt
   TENSORRT_PATH=$(python3 -c 'import tensorrt; print(tensorrt.__path__[0])')
   sudo ln -sf "${TENSORRT_PATH}/libnvinfer.so.8" "${TENSORRT_PATH}/libnvinfer.so.7"
   sudo ln -sf "${TENSORRT_PATH}/libnvinfer_plugin.so.8" "${TENSORRT_PATH}/libnvinfer_plugin.so.7"

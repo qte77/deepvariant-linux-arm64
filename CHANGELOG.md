@@ -24,12 +24,18 @@ Upstream compatibility: google/deepvariant v1.9.0
 - Moved `TRAINING_EXPERIMENT.md` and `TRAINING_RESUME.md` from root to `docs/`
 - Updated all cross-references to moved files (README, CLAUDE.md, architecture, paper)
 - Replaced pip with uv for all Python package management in ARM64 Docker builds
+- Replaced deadsnakes PPA with `uv venv --python 3.10` in all Docker stages
+- Pinned uv to `0.10` (was `latest`)
+- Split lint job from `arm64-build.yml` into dedicated `ci.yml` workflow
 - `Dockerfile.arm64`: 36 ADD layers → single wget loop in models stage (~50→15 layers)
 - `Dockerfile.arm64`: merged 2 apt-get + 3 pip install calls into single layers
 - `Dockerfile.arm64`: ONNX conversion moved to models stage (cached independently)
 - CI `build-arm64` timeout reduced from 240min to 30min (pre-built builder base)
 
 ### Removed
+- deadsnakes PPA dependency (Python 3.10 now managed by uv)
+- `python3-testresources` apt package (pip-era workaround)
+- `get-pip.py` bootstrap in `run-prereq.sh`
 - `Dockerfile.arm64.runtime`: superseded by `Dockerfile.arm64` with BUILDER_IMAGE arg
 - `Dockerfile.arm64`: removed inline builder-local fallback (use .builder file instead)
 

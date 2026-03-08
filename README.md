@@ -510,7 +510,7 @@ Full build: several hours on an 8-core machine (~2273 Bazel actions).
   1. Wait for upstream TF bump or fork TF 2.18 ARM64 build
   2. Upgrade Bazel 5.3.0 → 6.x+, update WORKSPACE and third_party patches
   3. Fix C++ kernel compilation against new TF headers (pybind11, protobuf ABI)
-  4. Switch runtime stage to `uv venv --python 3.13` (models stage already uses uv-managed Python; drop deadsnakes PPA)
+  4. Bump `uv venv --python 3.13` (all stages already use uv-managed Python)
   5. Rebuild base builder image from source
   6. Re-validate accuracy (GIAB HG003 WGS + WES, compare F1 to current baseline)
 

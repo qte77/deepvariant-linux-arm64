@@ -2,6 +2,7 @@
 #
 # Uses QEMU emulation for the build step (slow but free on GitHub Actions).
 # Accuracy testing requires a self-hosted ARM64 runner (Graviton, Ampere).
+# Pushes images to ghcr.io on both PRs (tagged pr-N) and main (tagged latest).
 
 name: ARM64 Build & Test
 
@@ -55,6 +56,9 @@ jobs:
     name: Build ARM64 Docker Image
     runs-on: ubuntu-latest
     timeout-minutes: 240
+    permissions:
+      contents: read
+      packages: write
     steps:
       - uses: actions/checkout@v4
 
@@ -67,23 +71,31 @@ jobs:
         uses: docker/setup-buildx-action@v3
 
       - name: Log in to GitHub Container Registry
-        if: github.event_name != 'pull_request'
         uses: docker/login-action@v3
         with:
           registry: ${{ env.REGISTRY }}
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Build ARM64 Docker image
+      - name: Docker meta (tags for main and PR branches)
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          tags: |
+            type=raw,value=latest,enable={{is_default_branch}}
+            type=sha,prefix=
+            type=ref,event=pr
+
+      - name: Build and push ARM64 Docker image
         uses: docker/build-push-action@v5
         with:
           context: .
           file: docker/Dockerfile.arm64
           platforms: linux/arm64
-          push: ${{ github.event_name != 'pull_request' }}
-          tags: |
-            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest
-            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ github.sha }}
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
 

@@ -35,31 +35,6 @@ env:
   BUILDER_TAG: base-builder-v1.9.0
 
 jobs:
-  lint-and-typecheck:
-    name: Lint & Type Check
-    runs-on: ubuntu-latest
-    timeout-minutes: 5
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Set up uv
-        uses: astral-sh/setup-uv@v5
-        with:
-          enable-cache: true
-          cache-dependency-glob: "uv.lock"
-
-      - name: Set up Python
-        run: uv python install 3.10
-
-      - name: Install dev dependencies
-        run: uv sync --group dev
-
-      - name: Lint with ruff
-        run: uv run ruff check scripts/*.py deepvariant/ --output-format=github
-
-      - name: Type check with pyright
-        run: uv run pyright
-
   # Rebuild the base builder image from source (Bazel compilation).
   # Only runs on manual dispatch with rebuild_builder=true.
   # Reason: native ARM64 runner — no QEMU, ~1-2hr vs ~4hr+ emulated

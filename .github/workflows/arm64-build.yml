@@ -16,10 +16,6 @@ on:
       - 'LICENSE'
   pull_request:
     branches: [main]
-    paths-ignore:
-      - 'docs/**'
-      - '*.md'
-      - 'LICENSE'
   workflow_dispatch:
     inputs:
       rebuild_builder:

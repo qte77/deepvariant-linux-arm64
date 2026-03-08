@@ -5,6 +5,8 @@ Upstream compatibility: google/deepvariant v1.9.0
 
 ## [Unreleased]
 
+## [v1.9.0-arm64.6] — 2026-03-08
+
 ### Added
 - `.bumpversion.toml`: automated fork version bumping (`bump-my-version`)
 - `.github/workflows/bump-version.yml`: workflow_dispatch version bump

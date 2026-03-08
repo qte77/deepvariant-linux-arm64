@@ -178,7 +178,7 @@ This is a community infrastructure resource. Choosing hardware for a genomics wo
 
 ### 4. EfficientNet-B3: a documented dead end
 
-Built the full EfficientNet-B3 training pipeline — then measured it running **3x slower** than InceptionV3 despite 3.2x fewer FLOPs. Depthwise separable convolutions and squeeze-and-excitation blocks have poor GEMM density on CPUs, negating their theoretical FLOP advantage on ARM NEON hardware. This confirms results from the architecture literature in a genomics-specific CPU context. Full details: [TRAINING_EXPERIMENT.md](TRAINING_EXPERIMENT.md).
+Built the full EfficientNet-B3 training pipeline — then measured it running **3x slower** than InceptionV3 despite 3.2x fewer FLOPs. Depthwise separable convolutions and squeeze-and-excitation blocks have poor GEMM density on CPUs, negating their theoretical FLOP advantage on ARM NEON hardware. This confirms results from the architecture literature in a genomics-specific CPU context. Full details: [TRAINING_EXPERIMENT.md](docs/TRAINING_EXPERIMENT.md).
 
 ---
 
@@ -480,7 +480,7 @@ Full build: several hours on an 8-core machine (~2273 Bazel actions).
 
 | Approach | Result | Why it failed |
 |----------|--------|--------------|
-| EfficientNet-B3 model swap | 3x slower despite 3.2x fewer FLOPs | Depthwise conv poor GEMM density on CPU — see [TRAINING_EXPERIMENT.md](TRAINING_EXPERIMENT.md) |
+| EfficientNet-B3 model swap | 3x slower despite 3.2x fewer FLOPs | Depthwise conv poor GEMM density on CPU — see [TRAINING_EXPERIMENT.md](docs/TRAINING_EXPERIMENT.md) |
 | KMP_AFFINITY tuning | 30% regression | Conflicts with OMP thread pinning on ARM |
 | ONNX ACL ExecutionProvider | Fragile, 16 ops supported | Not worth maintaining |
 | Dynamic INT8 on ARM64 | Crash | ConvInteger op missing in ORT ARM64 |

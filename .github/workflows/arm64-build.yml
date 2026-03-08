@@ -1,7 +1,8 @@
 # CI workflow for building and testing DeepVariant on ARM64.
 #
+# Uses native ARM64 runners (no QEMU emulation needed).
 # Runtime build uses a pre-built builder image from ghcr.io (~10min).
-# Full from-source builder rebuild available via workflow_dispatch (~4hr QEMU).
+# Full from-source builder rebuild available via workflow_dispatch (~1-2hr native).
 # Pushes images to ghcr.io on both PRs (tagged pr-N) and main (tagged latest).
 
 name: ARM64 Build & Test
@@ -22,7 +23,7 @@ on:
   workflow_dispatch:
     inputs:
       rebuild_builder:
-        description: 'Rebuild base builder image from source (slow, ~4hr under QEMU)'
+        description: 'Rebuild base builder image from source (~1-2hr native ARM64)'
         required: false
         default: 'false'
         type: choice
@@ -65,21 +66,17 @@ jobs:
 
   # Rebuild the base builder image from source (Bazel compilation).
   # Only runs on manual dispatch with rebuild_builder=true.
+  # Reason: native ARM64 runner — no QEMU, ~1-2hr vs ~4hr+ emulated
   build-builder:
     name: Rebuild Base Builder Image
     if: github.event_name == 'workflow_dispatch' && inputs.rebuild_builder == 'true'
-    runs-on: ubuntu-latest
-    timeout-minutes: 360
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 180
     permissions:
       contents: read
       packages: write
     steps:
       - uses: actions/checkout@v4
-
-      - name: Set up QEMU for ARM64 emulation
-        uses: docker/setup-qemu-action@v3
-        with:
-          platforms: arm64
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
@@ -96,27 +93,25 @@ jobs:
         with:
           context: .
           file: docker/Dockerfile.arm64.builder
-          platforms: linux/arm64
           push: true
           tags: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ env.BUILDER_TAG }}
           cache-from: type=gha,scope=builder
           cache-to: type=gha,mode=max,scope=builder
 
-  # Build the runtime image using the pre-built builder base (~10min).
+  # Build the runtime image using the pre-built builder base (~10min native).
+  # Reason: native ARM64 runner — no QEMU needed for apt-get, pip, tf2onnx
+  # Waits for builder rebuild if triggered via dispatch with rebuild_builder=true
   build-arm64:
     name: Build ARM64 Docker Image
-    runs-on: ubuntu-latest
+    needs: [build-builder]
+    if: always() && (needs.build-builder.result == 'success' || needs.build-builder.result == 'skipped')
+    runs-on: ubuntu-24.04-arm
     timeout-minutes: 30
     permissions:
       contents: read
       packages: write
     steps:
       - uses: actions/checkout@v4
-
-      - name: Set up QEMU for ARM64 emulation
-        uses: docker/setup-qemu-action@v3
-        with:
-          platforms: arm64
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
@@ -143,7 +138,6 @@ jobs:
         with:
           context: .
           file: docker/Dockerfile.arm64
-          platforms: linux/arm64
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}

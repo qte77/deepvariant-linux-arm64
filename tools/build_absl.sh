@@ -84,8 +84,8 @@ cd ../..
 rm -rf abseil-cpp
 
 # Install python runtime and test dependencies
-# Reason: uv manages the venv — no get-pip.py bootstrap needed
-uv pip install \
+# Reason: uv manages the venv; --python targets it when running as root via sudo
+uv pip install --python /opt/venv/bin/python3 \
     absl-py \
     parameterized
 

@@ -34,7 +34,7 @@ DOCKER_TAG ?= latest
 docker_build: ## Build ARM64 Docker image
 	docker buildx build \
 		--platform linux/arm64 \
-		-f Dockerfile.arm64 \
+		-f docker/Dockerfile.arm64 \
 		-t $(DOCKER_IMAGE):$(DOCKER_TAG) \
 		.
 

@@ -30,10 +30,10 @@ Ampere, Jetson, and RK3588 platforms. Build system: Bazel 5.3.0 + TF 2.13.1.
 ## Architecture Quick Reference
 
 **Build:** Bazel 5.3.0 (`BUILD`, `WORKSPACE`, `.bazelrc`)
-**Docker:** `Dockerfile.arm64` (build), `Dockerfile.arm64.runtime` (deploy)
+**Docker:** `docker/Dockerfile.arm64` (build), `docker/Dockerfile.arm64.runtime` (deploy)
 **Scripts:** `scripts/` — benchmarks, model conversion, run wrappers (Python + Bash)
 **Core:** `deepvariant/` — upstream source with ARM64 modifications
-**Settings:** `settings_arm64.sh` — ARM64 build flags, OneDNN+ACL, BF16
+**Settings:** `scripts/build/settings_arm64.sh` — ARM64 build flags, OneDNN+ACL, BF16
 
 ### Inference Backends (Priority)
 

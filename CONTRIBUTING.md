@@ -39,7 +39,7 @@ make docker_build
 
 ### Docker Build & Test
 
-The primary deliverable is `Dockerfile.arm64`. Build and test flow:
+The primary deliverable is `docker/Dockerfile.arm64`. Build and test flow:
 
 ```bash
 # Build
@@ -103,9 +103,12 @@ deepvariant-linux-arm64/
 ├── AGENT_LEARNINGS.md           # Accumulated agent knowledge
 ├── Makefile                     # Development commands
 ├── pyproject.toml               # Python tooling config
-├── Dockerfile.arm64             # ARM64 Docker build
-├── Dockerfile.arm64.runtime     # ARM64 runtime image
-├── settings_arm64.sh            # ARM64 build flags
+├── docker/
+│   ├── Dockerfile.arm64         # ARM64 Docker build
+│   └── Dockerfile.arm64.runtime # ARM64 runtime image
+├── scripts/
+│   └── build/
+│       └── settings_arm64.sh    # ARM64 build flags
 ├── scripts/                     # Benchmarks, conversion, run wrappers
 ├── deepvariant/                 # Upstream source + ARM64 modifications
 ├── docs/

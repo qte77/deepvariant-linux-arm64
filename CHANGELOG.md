@@ -6,6 +6,8 @@ Upstream compatibility: google/deepvariant v1.9.0
 ## [Unreleased]
 
 ### Added
+- `.bumpversion.toml`: automated fork version bumping (`bump-my-version`)
+- `.github/workflows/bump-version.yml`: workflow_dispatch version bump
 - `Dockerfile.arm64.builder`: standalone builder-stage Dockerfile for native
   ARM64 Bazel compilation (~1hr native vs ~4hr+ QEMU)
 - `Dockerfile.arm64`: 3-stage build (builder → models → runtime) with

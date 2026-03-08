@@ -91,7 +91,7 @@ The official Dockerfile hardcodes x86-specific paths (`bazel-out/k8-opt/bin/`). 
 **Key changes needed:**
 
 ```
-# settings.sh already handles aarch64 detection [cite:118]:
+# scripts/build/settings.sh already handles aarch64 detection [cite:118]:
 # - CUDNN_INSTALL_PATH="/usr/lib/aarch64-linux-gnu" for aarch64
 # - DV_COPT_FLAGS exclude -march=corei7 for non-x86
 
@@ -110,7 +110,7 @@ RUN pip install tensorflow-cpu-aws-graviton==2.14.1  # or official tensorflow-aa
 
 **Build tasks:**
 
-- [ ] Create `Dockerfile.arm64` based on upstream Dockerfile
+- [ ] Create `docker/Dockerfile.arm64` based on upstream Dockerfile
 - [ ] Port macOS Bazel patches to Linux ARM64 context (remove Apple-specific: zlib `TARGET_OS_MAC` guard not needed on Linux, no Boost Homebrew paths)
 - [ ] Set `--config=mkl_aarch64_threadpool` for OneDNN+ACL backend[7]
 - [ ] Cross-compile or native-build on Graviton instance (native preferred — 64+ cores makes build fast)
@@ -530,7 +530,7 @@ Arm's 2026 Mali GPUs with neural technology will support ExecuTorch via the VGF 
 ### Docker Multi-Architecture Build
 
 ```dockerfile
-# Dockerfile.arm64
+# docker/Dockerfile.arm64
 FROM arm64v8/ubuntu:22.04 AS builder
 
 # Install Bazel 5.3.0 for aarch64
@@ -560,7 +560,7 @@ jobs:
         with:
           platforms: arm64
       - name: Build ARM64 Docker image
-        run: docker buildx build --platform linux/arm64 -f Dockerfile.arm64 .
+        run: docker buildx build --platform linux/arm64 -f docker/Dockerfile.arm64 .
       
   test-accuracy:
     needs: build-arm64
@@ -898,13 +898,17 @@ Host hetzner-arm64
 deepvariant-linux-arm64/
 ├── CLAUDE.md                           # This file
 ├── Dockerfile                          # Upstream x86 Dockerfile (reference)
-├── Dockerfile.arm64                    # ARM64 Linux Docker build
-├── settings.sh                         # Upstream x86 settings (reference)
-├── settings_arm64.sh                   # ARM64 settings (no -march=corei7, OneDNN+ACL, BF16)
-├── build-prereq.sh                     # Upstream x86 build prereqs (reference)
-├── build-prereq-arm64.sh              # ARM64 build prereqs (ARM64 Bazel, system Boost)
-├── build_release_binaries.sh           # Upstream x86 build (reference)
-├── build_release_binaries_arm64.sh    # ARM64 build (aarch64-opt paths)
+├── docker/
+│   ├── Dockerfile.arm64                # ARM64 Linux Docker build
+│   └── Dockerfile.arm64.runtime       # ARM64 runtime image
+├── scripts/
+│   └── build/
+│       ├── settings.sh                 # Upstream x86 settings (reference)
+│       ├── settings_arm64.sh           # ARM64 settings (no -march=corei7, OneDNN+ACL, BF16)
+│       ├── build-prereq.sh             # Upstream x86 build prereqs (reference)
+│       ├── build-prereq-arm64.sh       # ARM64 build prereqs (ARM64 Bazel, system Boost)
+│       ├── build_release_binaries.sh   # Upstream x86 build (reference)
+│       └── build_release_binaries_arm64.sh  # ARM64 build (aarch64-opt paths)
 ├── .github/
 │   └── workflows/
 │       └── arm64-build.yml            # CI: QEMU build + self-hosted accuracy test

@@ -2,124 +2,148 @@
 # Modifications Copyright 2024 deepvariant-linux-arm64 contributors.
 #
 # ARM64 runtime Dockerfile for DeepVariant.
-# Uses a pre-built builder image (Bazel binaries) by default for fast CI builds.
+# 3-stage build: builder (pre-built) -> models (download+convert) -> runtime
 #
 # Default (fast, ~10min): uses pre-built base from ghcr.io
 #   docker build -f docker/Dockerfile.arm64 -t deepvariant-arm64 .
 #
-# Full from-source (~1hr native ARM64, ~4hr+ QEMU):
-#   docker build -f docker/Dockerfile.arm64 \
-#     --build-arg BUILDER_IMAGE=builder-local \
-#     --build-arg FROM_IMAGE=arm64v8/ubuntu:24.04 \
-#     -t deepvariant-arm64 .
+# Full from-source: build builder first, then reference it
+#   docker build -f docker/Dockerfile.arm64.builder -t dv-builder .
+#   docker build -f docker/Dockerfile.arm64 --build-arg BUILDER_IMAGE=dv-builder -t deepvariant-arm64 .
 #
-# With GPU support (Jetson):
-#   docker build -f docker/Dockerfile.arm64 \
-#     --build-arg BUILDER_IMAGE=builder-local \
-#     --build-arg FROM_IMAGE=nvcr.io/nvidia/l4t-tensorflow:r35.2.1-tf2.11-py3 \
-#     --build-arg DV_GPU_BUILD=1 \
-#     -t deepvariant-arm64-gpu .
-#
-# NOTE: Ubuntu 24.04 is required because GCC 13+ is needed for TF 2.13.1
-# compilation. GLIBC 2.38+ binaries cannot run on Ubuntu 22.04.
-# Python 3.10 is installed via deadsnakes PPA (required by TF 2.13.1).
+# NOTE: Ubuntu 24.04 required — GCC 13+ needed for TF 2.13.1 compilation.
+# Python 3.10 via deadsnakes PPA (required by TF 2.13.1).
 
 ARG BUILDER_IMAGE=ghcr.io/qte77/deepvariant-linux-arm64:base-builder-v1.9.0
 ARG FROM_IMAGE=arm64v8/ubuntu:24.04
-ARG PYTHON_VERSION=3.10
-ARG DV_GPU_BUILD=0
 ARG VERSION=1.9.0
 
-# --- Builder stage (from-source fallback) ------------------------------------
-# Reason: only used when BUILDER_IMAGE=builder-local; otherwise skipped by Docker
-FROM ${FROM_IMAGE} AS builder-local
-ARG DV_GPU_BUILD
-ARG PYTHON_VERSION
-ENV DV_GPU_BUILD=${DV_GPU_BUILD}
-ENV DV_BIN_PATH=/opt/deepvariant/bin
-ENV PIP_BREAK_SYSTEM_PACKAGES=1
-
-RUN apt-get update -qq && \
-    apt-get install -qq -y software-properties-common && \
-    add-apt-repository -y ppa:deadsnakes/ppa && \
-    apt-get update -qq && \
-    apt-get install -qq -y python3.10 python3.10-dev python3.10-distutils && \
-    update-alternatives --install /usr/bin/python3 python3 /usr/bin/python3.10 10 && \
-    apt-get clean && rm -rf /var/lib/apt/lists/*
-
-COPY . /opt/deepvariant
-
-ARG VERSION
-ENV VERSION=${VERSION}
-
-WORKDIR /opt/deepvariant
-
-RUN chmod +x scripts/build/build-prereq-arm64.sh scripts/build/build_release_binaries_arm64.sh && \
-    ./scripts/build/build-prereq-arm64.sh \
-    && PATH="${HOME}/.local/bin:${HOME}/bin:${PATH}" pip3 install --ignore-installed cryptography cffi "httplib2<0.22" \
-    && PATH="${HOME}/bin:${PATH}" ./scripts/build/build_release_binaries_arm64.sh
-
-# --- Use pre-built or from-source builder ------------------------------------
+# --- Stage 1: pre-built Bazel binaries ---------------------------------------
 FROM ${BUILDER_IMAGE} AS builder
 
-# --- Runtime stage -----------------------------------------------------------
-FROM ${FROM_IMAGE}
-ARG DV_GPU_BUILD
+# --- Stage 2: download and convert models (cached by VERSION) ----------------
+FROM ${FROM_IMAGE} AS models
 ARG VERSION
-ARG PYTHON_VERSION
-ENV DV_GPU_BUILD=${DV_GPU_BUILD}
-ENV VERSION=${VERSION}
-ENV PYTHON_VERSION=${PYTHON_VERSION}
-# TF_ENABLE_ONEDNN_OPTS intentionally NOT set here.
-# The docker_entrypoint.sh auto-detects BF16 and sets it appropriately:
-#   BF16 detected (Graviton3+): ON  — BFMMLA acceleration
-#   No BF16 (N1, AmpereOne):    OFF — avoids 29% ME overhead / SIGILL
-# Override: docker run -e TF_ENABLE_ONEDNN_OPTS=1 ...
+
+RUN apt-get update -qq && \
+    apt-get install -qq -y --no-install-recommends \
+        python3 python3-pip wget ca-certificates && \
+    apt-get clean && rm -rf /var/lib/apt/lists/*
 ENV PIP_BREAK_SYSTEM_PACKAGES=1
 
-WORKDIR /opt/
+# Reason: tf2onnx needs numpy+onnx+tf; install in models stage to keep runtime clean
+RUN pip3 install --no-cache-dir tf2onnx onnxruntime
 
-# Install Python 3.10, samtools, and bcftools
+WORKDIR /opt
+
+# Download all SavedModels in a single layer
+ARG GCS=https://storage.googleapis.com/deepvariant/models/DeepVariant
+RUN set -e && \
+    for model in wgs wes pacbio; do \
+        mkdir -p /opt/models/${model}/variables && \
+        wget -q "${GCS}/${VERSION}/savedmodels/deepvariant.${model}.savedmodel/fingerprint.pb" \
+             -O /opt/models/${model}/fingerprint.pb && \
+        wget -q "${GCS}/${VERSION}/savedmodels/deepvariant.${model}.savedmodel/saved_model.pb" \
+             -O /opt/models/${model}/saved_model.pb && \
+        wget -q "${GCS}/${VERSION}/savedmodels/deepvariant.${model}.savedmodel/example_info.json" \
+             -O /opt/models/${model}/example_info.json && \
+        wget -q "${GCS}/${VERSION}/savedmodels/deepvariant.${model}.savedmodel/variables/variables.data-00000-of-00001" \
+             -O /opt/models/${model}/variables/variables.data-00000-of-00001 && \
+        wget -q "${GCS}/${VERSION}/savedmodels/deepvariant.${model}.savedmodel/variables/variables.index" \
+             -O /opt/models/${model}/variables/variables.index; \
+    done && \
+    # Models with non-standard directory names
+    for pair in "hybrid_pacbio_illumina:hybrid" "ont_r104:ont" "masseq:masseq"; do \
+        dir="${pair%%:*}"; slug="${pair##*:}"; \
+        mkdir -p /opt/models/${dir}/variables && \
+        wget -q "${GCS}/${VERSION}/savedmodels/deepvariant.${slug}.savedmodel/fingerprint.pb" \
+             -O /opt/models/${dir}/fingerprint.pb && \
+        wget -q "${GCS}/${VERSION}/savedmodels/deepvariant.${slug}.savedmodel/saved_model.pb" \
+             -O /opt/models/${dir}/saved_model.pb && \
+        wget -q "${GCS}/${VERSION}/savedmodels/deepvariant.${slug}.savedmodel/example_info.json" \
+             -O /opt/models/${dir}/example_info.json && \
+        wget -q "${GCS}/${VERSION}/savedmodels/deepvariant.${slug}.savedmodel/variables/variables.data-00000-of-00001" \
+             -O /opt/models/${dir}/variables/variables.data-00000-of-00001 && \
+        wget -q "${GCS}/${VERSION}/savedmodels/deepvariant.${slug}.savedmodel/variables/variables.index" \
+             -O /opt/models/${dir}/variables/variables.index; \
+    done && \
+    # Small models (have keras_metadata.pb instead of example_info.json)
+    for pair in "wgs:wgs" "pacbio:pacbio" "ont_r104:ont"; do \
+        dir="${pair%%:*}"; slug="${pair##*:}"; \
+        mkdir -p /opt/smallmodels/${dir}/variables && \
+        wget -q "${GCS}/${VERSION}/smallmodels/deepvariant.${slug}.smallmodel/fingerprint.pb" \
+             -O /opt/smallmodels/${dir}/fingerprint.pb && \
+        wget -q "${GCS}/${VERSION}/smallmodels/deepvariant.${slug}.smallmodel/saved_model.pb" \
+             -O /opt/smallmodels/${dir}/saved_model.pb && \
+        wget -q "${GCS}/${VERSION}/smallmodels/deepvariant.${slug}.smallmodel/keras_metadata.pb" \
+             -O /opt/smallmodels/${dir}/keras_metadata.pb && \
+        wget -q "${GCS}/${VERSION}/smallmodels/deepvariant.${slug}.smallmodel/variables/variables.data-00000-of-00001" \
+             -O /opt/smallmodels/${dir}/variables/variables.data-00000-of-00001 && \
+        wget -q "${GCS}/${VERSION}/smallmodels/deepvariant.${slug}.smallmodel/variables/variables.index" \
+             -O /opt/smallmodels/${dir}/variables/variables.index; \
+    done && \
+    chmod -R +r /opt/models /opt/smallmodels
+
+# Convert WGS/WES/PacBio to ONNX (other model types are TF-only)
+RUN python3 -m tf2onnx.convert --saved-model /opt/models/wgs --output /opt/models/wgs/model.onnx --opset 17 && \
+    python3 -m tf2onnx.convert --saved-model /opt/models/wes --output /opt/models/wes/model.onnx --opset 17 && \
+    python3 -m tf2onnx.convert --saved-model /opt/models/pacbio --output /opt/models/pacbio/model.onnx --opset 17
+
+# Pre-validated INT8 WGS model (SNP F1=0.9978, INDEL F1=0.9962, 21 MB vs 84 MB FP32)
+RUN wget -q -O /opt/models/wgs/model_int8_static.onnx \
+      https://github.com/antomicblitz/deepvariant-linux-arm64/releases/download/v1.9.0-arm64.5/model_int8_static.onnx
+
+# --- Stage 3: runtime --------------------------------------------------------
+FROM ${FROM_IMAGE}
+ARG VERSION
+ENV VERSION=${VERSION}
+ENV PIP_BREAK_SYSTEM_PACKAGES=1
+ENV PATH="$PATH:/opt/deepvariant/bin"
+
+# Reason: single apt-get layer — Python 3.10 (TF requirement), samtools/bcftools
+# (variant calling), parallel (multi-sample), libjemalloc2 (14-17% ME speedup)
 RUN apt-get update -qq && \
-    apt-get install -qq -y software-properties-common && \
+    apt-get install -qq -y --no-install-recommends \
+        software-properties-common && \
     add-apt-repository -y ppa:deadsnakes/ppa && \
     apt-get update -qq && \
-    apt-get install -qq -y python3.10 python3.10-dev python3.10-distutils \
-                           samtools bcftools && \
+    apt-get install -qq -y --no-install-recommends \
+        python3.10 python3.10-dev python3.10-distutils \
+        samtools bcftools parallel python3-pip libjemalloc2 wget && \
     update-alternatives --install /usr/bin/python3 python3 /usr/bin/python3.10 10 && \
     update-alternatives --install /usr/bin/python python /usr/bin/python3.10 10 && \
-    apt-get clean && rm -rf /var/lib/apt/lists/*
+    apt-get clean autoclean && \
+    apt-get autoremove -y --purge && \
+    rm -rf /var/lib/apt/lists/*
 
-COPY --from=builder /opt/deepvariant/bazel-bin/licenses.zip .
+# Reason: single pip layer — prereqs, ABI fix, ONNX runtime
+COPY --from=builder /opt/deepvariant/scripts/build/run-prereq.sh /opt/deepvariant/bin/
+COPY --from=builder /opt/deepvariant/scripts/build/settings.sh /opt/deepvariant/bin/
+COPY --from=builder /opt/deepvariant/scripts/build/settings_arm64.sh /opt/deepvariant/bin/
+WORKDIR /opt/deepvariant/bin
+RUN ./run-prereq.sh && \
+    PATH="/root/.local/bin:$PATH" pip3 install --no-cache-dir \
+        --ignore-installed cryptography cffi \
+        "httplib2<0.22" absl-py==0.13.0 onnxruntime
 
-# ARM64: use aarch64-opt instead of k8-opt
-WORKDIR /opt/deepvariant/bin/
-COPY --from=builder /opt/deepvariant/scripts/build/run-prereq.sh .
-COPY --from=builder /opt/deepvariant/scripts/build/settings.sh .
-COPY --from=builder /opt/deepvariant/scripts/build/settings_arm64.sh .
-COPY --from=builder /opt/deepvariant/bazel-out/aarch64-opt/bin/deepvariant/make_examples.zip  .
-COPY --from=builder /opt/deepvariant/bazel-out/aarch64-opt/bin/deepvariant/call_variants.zip  .
-COPY --from=builder /opt/deepvariant/bazel-out/aarch64-opt/bin/deepvariant/postprocess_variants.zip  .
-COPY --from=builder /opt/deepvariant/bazel-out/aarch64-opt/bin/deepvariant/vcf_stats_report.zip  .
-COPY --from=builder /opt/deepvariant/bazel-out/aarch64-opt/bin/deepvariant/show_examples.zip  .
-COPY --from=builder /opt/deepvariant/bazel-out/aarch64-opt/bin/deepvariant/runtime_by_region_vis.zip  .
-COPY --from=builder /opt/deepvariant/bazel-out/aarch64-opt/bin/deepvariant/multisample_make_examples.zip  .
-COPY --from=builder /opt/deepvariant/bazel-out/aarch64-opt/bin/deepvariant/labeler/labeled_examples_to_vcf.zip  .
-COPY --from=builder /opt/deepvariant/bazel-out/aarch64-opt/bin/deepvariant/convert_to_saved_model.zip  .
-COPY --from=builder /opt/deepvariant/bazel-out/aarch64-opt/bin/deepvariant/make_examples_somatic.zip  .
-COPY --from=builder /opt/deepvariant/bazel-out/aarch64-opt/bin/deepvariant/train.zip  .
-COPY --from=builder /opt/deepvariant/bazel-out/aarch64-opt/bin/deepvariant/fast_pipeline .
-COPY --from=builder /opt/deepvariant/scripts/run_deepvariant.py .
+# Copy Bazel binaries from builder (single COPY for all zips)
+COPY --from=builder /opt/deepvariant/bazel-bin/licenses.zip /opt/
+COPY --from=builder /opt/deepvariant/bazel-out/aarch64-opt/bin/deepvariant/make_examples.zip ./
+COPY --from=builder /opt/deepvariant/bazel-out/aarch64-opt/bin/deepvariant/call_variants.zip ./
+COPY --from=builder /opt/deepvariant/bazel-out/aarch64-opt/bin/deepvariant/postprocess_variants.zip ./
+COPY --from=builder /opt/deepvariant/bazel-out/aarch64-opt/bin/deepvariant/vcf_stats_report.zip ./
+COPY --from=builder /opt/deepvariant/bazel-out/aarch64-opt/bin/deepvariant/show_examples.zip ./
+COPY --from=builder /opt/deepvariant/bazel-out/aarch64-opt/bin/deepvariant/runtime_by_region_vis.zip ./
+COPY --from=builder /opt/deepvariant/bazel-out/aarch64-opt/bin/deepvariant/multisample_make_examples.zip ./
+COPY --from=builder /opt/deepvariant/bazel-out/aarch64-opt/bin/deepvariant/labeler/labeled_examples_to_vcf.zip ./
+COPY --from=builder /opt/deepvariant/bazel-out/aarch64-opt/bin/deepvariant/convert_to_saved_model.zip ./
+COPY --from=builder /opt/deepvariant/bazel-out/aarch64-opt/bin/deepvariant/make_examples_somatic.zip ./
+COPY --from=builder /opt/deepvariant/bazel-out/aarch64-opt/bin/deepvariant/train.zip ./
+COPY --from=builder /opt/deepvariant/bazel-out/aarch64-opt/bin/deepvariant/fast_pipeline ./
+COPY --from=builder /opt/deepvariant/scripts/run_deepvariant.py ./
 
-RUN ./run-prereq.sh
-
-# Fix cryptography ABI mismatch (system package compiled for Python 3.12)
-RUN PATH="/root/.local/bin:$PATH" pip3 install --ignore-installed cryptography cffi
-RUN PATH="/root/.local/bin:$PATH" pip3 install "httplib2<0.22"
-
-# Create shell wrappers for python zip files for easier use.
-RUN \
-  for name in make_examples call_variants postprocess_variants vcf_stats_report \
+# Create shell wrappers for python zip files
+RUN for name in make_examples call_variants postprocess_variants vcf_stats_report \
               show_examples runtime_by_region_vis multisample_make_examples \
               convert_to_saved_model train; do \
     printf '#!/bin/bash\n/usr/bin/python3 /opt/deepvariant/bin/%s.zip "$@"\n' "$name" > \
@@ -134,113 +158,11 @@ RUN \
   printf '#!/bin/bash\n/usr/bin/python3 /opt/deepvariant/scripts/quantize_static_onnx.py "$@"\n' > \
     /opt/deepvariant/bin/quantize_model && chmod +x /opt/deepvariant/bin/quantize_model
 
-# Copy models (same as upstream — models are architecture-independent)
-WORKDIR /opt/models/wgs
-ADD https://storage.googleapis.com/deepvariant/models/DeepVariant/${VERSION}/savedmodels/deepvariant.wgs.savedmodel/fingerprint.pb .
-ADD https://storage.googleapis.com/deepvariant/models/DeepVariant/${VERSION}/savedmodels/deepvariant.wgs.savedmodel/saved_model.pb .
-ADD https://storage.googleapis.com/deepvariant/models/DeepVariant/${VERSION}/savedmodels/deepvariant.wgs.savedmodel/example_info.json .
-WORKDIR /opt/models/wgs/variables
-ADD https://storage.googleapis.com/deepvariant/models/DeepVariant/${VERSION}/savedmodels/deepvariant.wgs.savedmodel/variables/variables.data-00000-of-00001 .
-ADD https://storage.googleapis.com/deepvariant/models/DeepVariant/${VERSION}/savedmodels/deepvariant.wgs.savedmodel/variables/variables.index .
-RUN chmod -R +r /opt/models/wgs/*
+# Copy models + ONNX conversions from models stage (single layer)
+COPY --from=models /opt/models /opt/models
+COPY --from=models /opt/smallmodels /opt/smallmodels
 
-WORKDIR /opt/models/wes
-ADD https://storage.googleapis.com/deepvariant/models/DeepVariant/${VERSION}/savedmodels/deepvariant.wes.savedmodel/fingerprint.pb .
-ADD https://storage.googleapis.com/deepvariant/models/DeepVariant/${VERSION}/savedmodels/deepvariant.wes.savedmodel/saved_model.pb .
-ADD https://storage.googleapis.com/deepvariant/models/DeepVariant/${VERSION}/savedmodels/deepvariant.wes.savedmodel/example_info.json .
-WORKDIR /opt/models/wes/variables
-ADD https://storage.googleapis.com/deepvariant/models/DeepVariant/${VERSION}/savedmodels/deepvariant.wes.savedmodel/variables/variables.data-00000-of-00001 .
-ADD https://storage.googleapis.com/deepvariant/models/DeepVariant/${VERSION}/savedmodels/deepvariant.wes.savedmodel/variables/variables.index .
-RUN chmod -R +r /opt/models/wes/*
-
-WORKDIR /opt/models/pacbio
-ADD https://storage.googleapis.com/deepvariant/models/DeepVariant/${VERSION}/savedmodels/deepvariant.pacbio.savedmodel/fingerprint.pb .
-ADD https://storage.googleapis.com/deepvariant/models/DeepVariant/${VERSION}/savedmodels/deepvariant.pacbio.savedmodel/saved_model.pb .
-ADD https://storage.googleapis.com/deepvariant/models/DeepVariant/${VERSION}/savedmodels/deepvariant.pacbio.savedmodel/example_info.json .
-WORKDIR /opt/models/pacbio/variables
-ADD https://storage.googleapis.com/deepvariant/models/DeepVariant/${VERSION}/savedmodels/deepvariant.pacbio.savedmodel/variables/variables.data-00000-of-00001 .
-ADD https://storage.googleapis.com/deepvariant/models/DeepVariant/${VERSION}/savedmodels/deepvariant.pacbio.savedmodel/variables/variables.index .
-RUN chmod -R +r /opt/models/pacbio/*
-
-WORKDIR /opt/models/hybrid_pacbio_illumina
-ADD https://storage.googleapis.com/deepvariant/models/DeepVariant/${VERSION}/savedmodels/deepvariant.hybrid.savedmodel/fingerprint.pb .
-ADD https://storage.googleapis.com/deepvariant/models/DeepVariant/${VERSION}/savedmodels/deepvariant.hybrid.savedmodel/saved_model.pb .
-ADD https://storage.googleapis.com/deepvariant/models/DeepVariant/${VERSION}/savedmodels/deepvariant.hybrid.savedmodel/example_info.json .
-WORKDIR /opt/models/hybrid_pacbio_illumina/variables
-ADD https://storage.googleapis.com/deepvariant/models/DeepVariant/${VERSION}/savedmodels/deepvariant.hybrid.savedmodel/variables/variables.data-00000-of-00001 .
-ADD https://storage.googleapis.com/deepvariant/models/DeepVariant/${VERSION}/savedmodels/deepvariant.hybrid.savedmodel/variables/variables.index .
-RUN chmod -R +r /opt/models/hybrid_pacbio_illumina/*
-
-WORKDIR /opt/models/ont_r104
-ADD https://storage.googleapis.com/deepvariant/models/DeepVariant/${VERSION}/savedmodels/deepvariant.ont.savedmodel/fingerprint.pb .
-ADD https://storage.googleapis.com/deepvariant/models/DeepVariant/${VERSION}/savedmodels/deepvariant.ont.savedmodel/saved_model.pb .
-ADD https://storage.googleapis.com/deepvariant/models/DeepVariant/${VERSION}/savedmodels/deepvariant.ont.savedmodel/example_info.json .
-WORKDIR /opt/models/ont_r104/variables
-ADD https://storage.googleapis.com/deepvariant/models/DeepVariant/${VERSION}/savedmodels/deepvariant.ont.savedmodel/variables/variables.data-00000-of-00001 .
-ADD https://storage.googleapis.com/deepvariant/models/DeepVariant/${VERSION}/savedmodels/deepvariant.ont.savedmodel/variables/variables.index .
-RUN chmod -R +r /opt/models/ont_r104/*
-
-WORKDIR /opt/models/masseq
-ADD https://storage.googleapis.com/deepvariant/models/DeepVariant/${VERSION}/savedmodels/deepvariant.masseq.savedmodel/fingerprint.pb .
-ADD https://storage.googleapis.com/deepvariant/models/DeepVariant/${VERSION}/savedmodels/deepvariant.masseq.savedmodel/saved_model.pb .
-ADD https://storage.googleapis.com/deepvariant/models/DeepVariant/${VERSION}/savedmodels/deepvariant.masseq.savedmodel/example_info.json .
-WORKDIR /opt/models/masseq/variables
-ADD https://storage.googleapis.com/deepvariant/models/DeepVariant/${VERSION}/savedmodels/deepvariant.masseq.savedmodel/variables/variables.data-00000-of-00001 .
-ADD https://storage.googleapis.com/deepvariant/models/DeepVariant/${VERSION}/savedmodels/deepvariant.masseq.savedmodel/variables/variables.index .
-RUN chmod -R +r /opt/models/masseq/*
-
-# Copy small models
-WORKDIR /opt/smallmodels/wgs
-ADD https://storage.googleapis.com/deepvariant/models/DeepVariant/${VERSION}/smallmodels/deepvariant.wgs.smallmodel/fingerprint.pb .
-ADD https://storage.googleapis.com/deepvariant/models/DeepVariant/${VERSION}/smallmodels/deepvariant.wgs.smallmodel/saved_model.pb .
-ADD https://storage.googleapis.com/deepvariant/models/DeepVariant/${VERSION}/smallmodels/deepvariant.wgs.smallmodel/keras_metadata.pb .
-WORKDIR /opt/smallmodels/wgs/variables
-ADD https://storage.googleapis.com/deepvariant/models/DeepVariant/${VERSION}/smallmodels/deepvariant.wgs.smallmodel/variables/variables.data-00000-of-00001 .
-ADD https://storage.googleapis.com/deepvariant/models/DeepVariant/${VERSION}/smallmodels/deepvariant.wgs.smallmodel/variables/variables.index .
-RUN chmod -R +r /opt/smallmodels/wgs/*
-
-WORKDIR /opt/smallmodels/pacbio
-ADD https://storage.googleapis.com/deepvariant/models/DeepVariant/${VERSION}/smallmodels/deepvariant.pacbio.smallmodel/fingerprint.pb .
-ADD https://storage.googleapis.com/deepvariant/models/DeepVariant/${VERSION}/smallmodels/deepvariant.pacbio.smallmodel/saved_model.pb .
-ADD https://storage.googleapis.com/deepvariant/models/DeepVariant/${VERSION}/smallmodels/deepvariant.pacbio.smallmodel/keras_metadata.pb .
-WORKDIR /opt/smallmodels/pacbio/variables
-ADD https://storage.googleapis.com/deepvariant/models/DeepVariant/${VERSION}/smallmodels/deepvariant.pacbio.smallmodel/variables/variables.data-00000-of-00001 .
-ADD https://storage.googleapis.com/deepvariant/models/DeepVariant/${VERSION}/smallmodels/deepvariant.pacbio.smallmodel/variables/variables.index .
-RUN chmod -R +r /opt/smallmodels/pacbio/*
-
-WORKDIR /opt/smallmodels/ont_r104
-ADD https://storage.googleapis.com/deepvariant/models/DeepVariant/${VERSION}/smallmodels/deepvariant.ont.smallmodel/fingerprint.pb .
-ADD https://storage.googleapis.com/deepvariant/models/DeepVariant/${VERSION}/smallmodels/deepvariant.ont.smallmodel/saved_model.pb .
-ADD https://storage.googleapis.com/deepvariant/models/DeepVariant/${VERSION}/smallmodels/deepvariant.ont.smallmodel/keras_metadata.pb .
-WORKDIR /opt/smallmodels/ont_r104/variables
-ADD https://storage.googleapis.com/deepvariant/models/DeepVariant/${VERSION}/smallmodels/deepvariant.ont.smallmodel/variables/variables.data-00000-of-00001 .
-ADD https://storage.googleapis.com/deepvariant/models/DeepVariant/${VERSION}/smallmodels/deepvariant.ont.smallmodel/variables/variables.index .
-RUN chmod -R +r /opt/smallmodels/ont_r104/*
-
-ENV PATH="$PATH:/opt/deepvariant/bin"
-
-RUN apt-get -y update && \
-  apt-get install -y parallel python3-pip libjemalloc2 wget && \
-  PATH="${HOME}/.local/bin:$PATH" python3 -m pip install absl-py==0.13.0 && \
-  apt-get clean autoclean && \
-  apt-get autoremove -y --purge && \
-  rm -rf /var/lib/apt/lists/*
-
-# ONNX Runtime for accelerated ARM64 inference
-RUN PATH="${HOME}/.local/bin:$PATH" pip3 install tf2onnx onnxruntime
-
-# Convert models to ONNX format for --use_onnx flag
-RUN python3 -m tf2onnx.convert --saved-model /opt/models/wgs --output /opt/models/wgs/model.onnx --opset 17 && \
-    python3 -m tf2onnx.convert --saved-model /opt/models/wes --output /opt/models/wes/model.onnx --opset 17 && \
-    python3 -m tf2onnx.convert --saved-model /opt/models/pacbio --output /opt/models/pacbio/model.onnx --opset 17
-
-# Download pre-validated INT8 WGS model (SNP F1=0.9978, INDEL F1=0.9962).
-# 21 MB vs 84 MB FP32. Optimal on non-BF16 platforms (2.3x over FP32).
-# Entrypoint auto-selects this when BF16 is not available.
-RUN wget -q -O /opt/models/wgs/model_int8_static.onnx \
-      https://github.com/antomicblitz/deepvariant-linux-arm64/releases/download/v1.9.0-arm64.5/model_int8_static.onnx
-
-# Scripts: entrypoint, autoconfig, parallel CV wrapper, quantization, ONNX conversion
+# Copy scripts from build context
 COPY scripts/docker_entrypoint.sh /opt/deepvariant/bin/docker_entrypoint.sh
 COPY scripts/autoconfig.sh /opt/deepvariant/scripts/autoconfig.sh
 COPY scripts/run_parallel_cv.sh /opt/deepvariant/scripts/run_parallel_cv.sh
@@ -251,6 +173,11 @@ RUN chmod +x /opt/deepvariant/bin/docker_entrypoint.sh \
              /opt/deepvariant/scripts/run_parallel_cv.sh
 
 WORKDIR /opt/deepvariant
+
+# TF_ENABLE_ONEDNN_OPTS intentionally NOT set here.
+# docker_entrypoint.sh auto-detects BF16 and sets it appropriately:
+#   BF16 detected (Graviton3+): ON  — BFMMLA acceleration
+#   No BF16 (N1, AmpereOne):    OFF — avoids 29% ME overhead / SIGILL
 
 ENTRYPOINT ["/opt/deepvariant/bin/docker_entrypoint.sh"]
 CMD ["/opt/deepvariant/bin/run_deepvariant", "--help"]

@@ -8,8 +8,8 @@ Upstream compatibility: google/deepvariant v1.9.0
 ### Added
 - `Dockerfile.arm64.builder`: standalone builder-stage Dockerfile for native
   ARM64 Bazel compilation (~1hr native vs ~4hr+ QEMU)
-- `Dockerfile.arm64`: `BUILDER_IMAGE` build-arg defaults to pre-built ghcr.io
-  base; retains inline from-source fallback via `builder-local`
+- `Dockerfile.arm64`: 3-stage build (builder → models → runtime) with
+  `BUILDER_IMAGE` build-arg defaulting to pre-built ghcr.io base
 - CI `build-builder` job: manual workflow_dispatch to rebuild base builder image
 - `docker_entrypoint.sh`: THP via `GLIBC_TUNABLES=glibc.malloc.hugetlb=2`
   (glibc >= 2.35, ~6% SPEC improvement on AArch64, reduces TLB pressure)
@@ -19,6 +19,16 @@ Upstream compatibility: google/deepvariant v1.9.0
   and `GLIBC_TUNABLES` so `DV_AUTOCONFIG=1` auto-enables jemalloc
 - `call_variants.py`: ORT `graph_optimization_level = ORT_ENABLE_ALL` for
   extended operator fusion (Conv+BN, GEMM+Activation, constant folding)
+
+### Changed
+- `Dockerfile.arm64`: 36 ADD layers → single wget loop in models stage (~50→15 layers)
+- `Dockerfile.arm64`: merged 2 apt-get + 3 pip install calls into single layers
+- `Dockerfile.arm64`: ONNX conversion moved to models stage (cached independently)
+- CI `build-arm64` timeout reduced from 240min to 30min (pre-built builder base)
+
+### Removed
+- `Dockerfile.arm64.runtime`: superseded by `Dockerfile.arm64` with BUILDER_IMAGE arg
+- `Dockerfile.arm64`: removed inline builder-local fallback (use .builder file instead)
 
 ### Fixed
 - `call_variants.py`: ORT version parse crash on `.post1` suffixes

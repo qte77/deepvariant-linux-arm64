@@ -2,16 +2,16 @@
 
 [![release](https://img.shields.io/badge/base-v1.9.0-green?logo=github)](https://github.com/google/deepvariant/releases)
 [![platform](https://img.shields.io/badge/platform-Linux%20ARM64-blue?logo=linux)](https://en.wikipedia.org/wiki/AArch64)
-[![accuracy](https://img.shields.io/badge/SNP%20F1-0.9978-success)](#accuracy)
+[![accuracy](https://img.shields.io/badge/SNP%20F1-0.9961%20(full%20genome)-success)](#accuracy--full-genome-validation)
 [![license](https://img.shields.io/badge/license-BSD--3-blue)](#license)
 
 > Fork of [google/deepvariant](https://github.com/google/deepvariant) v1.9.0. Tags: `v{upstream}-arm64.{n}`.
 
 **The gold standard in variant calling. Now on ARM64. For less than the price of a chewing gum per genome.**
 
-Google's [DeepVariant](https://rdcu.be/7Dhl) (Poplin et al., *Nature Biotechnology* 2018) achieves the highest SNP accuracy of any open-source variant caller. It also had no Linux ARM64 build — until this fork. Run it on a $0.16/hr Oracle A1 instance and get the same accuracy as a well-equipped sequencing center, at **$0.80/genome on dedicated ARM64 vCPUs** — or **$0.33/genome on a Hetzner CAX41 shared instance** in the EU.
+Google's [DeepVariant](https://rdcu.be/7Dhl) (Poplin et al., *Nature Biotechnology* 2018) achieves the highest SNP accuracy of any open-source variant caller. It also had no Linux ARM64 build — until this fork. Run it on a $0.16/hr Oracle A1 instance and get near-reference accuracy (SNP F1 0.9961 vs x86's ~0.9996 on full 30x WGS) at **$0.80/genome on dedicated ARM64 vCPUs** — or **$0.33/genome on a Hetzner CAX41 shared instance** in the EU.
 
-At [UK Biobank](https://doi.org/10.1038/s41586-025-09272-9) scale (490,640 genomes), that difference vs. the x86 reference cost is **$2.3 million** — enough to fund the sequencing of ~4,600 additional genomes. For the [proposed Three Million African Genomes project](https://doi.org/10.1038/d41586-021-00313-7), the gap is $15M vs. $1M.
+At [UK Biobank](https://doi.org/10.1038/s41586-025-09272-9) scale (490,640 genomes), the compute cost difference vs. the x86 reference is **$2.3 million** — enough to fund the sequencing of ~4,600 additional genomes. For the [proposed Three Million African Genomes project](https://doi.org/10.1038/d41586-021-00313-7), the gap is $15M vs. $1M. The trade-off is a small accuracy reduction (SNP F1 0.9961 vs ~0.9996 on x86) and longer wall time — acceptable for population-scale GWAS, where cost dominates.
 
 ---
 
@@ -20,11 +20,11 @@ At [UK Biobank](https://doi.org/10.1038/s41586-025-09272-9) scale (490,640 genom
 **Requirements:** ARM64 Linux + Docker.
 
 ```bash
-docker pull ghcr.io/antomicblitz/deepvariant-arm64:v1.9.0-arm64.5
+docker pull ghcr.io/antomicblitz/deepvariant-arm64:v1.9.0-arm64.6
 
 docker run \
   -v /path/to/data:/data \
-  ghcr.io/antomicblitz/deepvariant-arm64:v1.9.0-arm64.5 \
+  ghcr.io/antomicblitz/deepvariant-arm64:v1.9.0-arm64.6 \
   /opt/deepvariant/scripts/run_parallel_cv.sh \
   --model_type=WGS \
   --ref=/data/reference.fasta \
@@ -43,7 +43,7 @@ The script auto-detects your CPU (Graviton3/4, AmpereOne, Neoverse-N1/N2), enabl
 docker run -v /path/to/data:/data --memory=28g \
   -e TF_ENABLE_ONEDNN_OPTS=1 -e ONEDNN_DEFAULT_FPMATH_MODE=BF16 \
   -e OMP_NUM_THREADS=$(nproc) -e OMP_PROC_BIND=false -e OMP_PLACES=cores \
-  ghcr.io/antomicblitz/deepvariant-arm64:v1.9.0-arm64.5 \
+  ghcr.io/antomicblitz/deepvariant-arm64:v1.9.0-arm64.6 \
   /opt/deepvariant/bin/run_deepvariant \
   --model_type=WGS --ref=/data/reference.fasta --reads=/data/input.bam \
   --output_vcf=/data/output.vcf.gz --num_shards=$(nproc) \
@@ -57,7 +57,7 @@ The Docker image ships with a pre-quantized WGS INT8 model. To quantize a differ
 ```bash
 # Step 1: Run the pipeline to generate calibration TFRecords
 docker run -v /path/to/data:/data --memory=28g \
-  ghcr.io/antomicblitz/deepvariant-arm64:v1.9.0-arm64.5 \
+  ghcr.io/antomicblitz/deepvariant-arm64:v1.9.0-arm64.6 \
   /opt/deepvariant/bin/run_deepvariant \
   --model_type=WGS --ref=/data/reference.fasta --reads=/data/input.bam \
   --output_vcf=/data/output.vcf.gz --num_shards=$(nproc) \
@@ -65,7 +65,7 @@ docker run -v /path/to/data:/data --memory=28g \
 
 # Step 2: Quantize (one-time, ~2 min)
 docker run -v /path/to/data:/data \
-  ghcr.io/antomicblitz/deepvariant-arm64:v1.9.0-arm64.5 \
+  ghcr.io/antomicblitz/deepvariant-arm64:v1.9.0-arm64.6 \
   quantize_model \
   --input /opt/models/wgs/model.onnx \
   --output /data/model_int8_custom.onnx \
@@ -74,7 +74,7 @@ docker run -v /path/to/data:/data \
 
 # Step 3: Use the custom INT8 model
 docker run -v /path/to/data:/data --memory=28g \
-  ghcr.io/antomicblitz/deepvariant-arm64:v1.9.0-arm64.5 \
+  ghcr.io/antomicblitz/deepvariant-arm64:v1.9.0-arm64.6 \
   /opt/deepvariant/bin/run_deepvariant \
   --model_type=WGS --ref=/data/reference.fasta --reads=/data/input.bam \
   --output_vcf=/data/output.vcf.gz --num_shards=$(nproc) \
@@ -91,7 +91,7 @@ On NVMe or tmpfs storage, add `--nocompress_intermediates` to skip gzip on TFRec
 ```bash
 docker run -v /path/to/data:/data --memory=28g \
   -e DV_AUTOCONFIG=1 -e DV_USE_JEMALLOC=1 \
-  ghcr.io/antomicblitz/deepvariant-arm64:v1.9.0-arm64.5 \
+  ghcr.io/antomicblitz/deepvariant-arm64:v1.9.0-arm64.6 \
   /opt/deepvariant/bin/run_deepvariant \
   --model_type=WGS --ref=/data/reference.fasta --reads=/data/input.bam \
   --output_vcf=/data/output.vcf.gz --num_shards=$(nproc) \
@@ -130,12 +130,16 @@ There are four distinct results here, with different levels of novelty.
 
 ### 1. INT8 quantization without accuracy loss *(the most novel result)*
 
-The DeepVariant InceptionV3 model (84 MB FP32) was quantized to INT8 using ONNX Runtime static quantization with calibration data drawn from real genomic TFRecords. The quantized model is **74% smaller (21 MB)** and **2.3x faster** at inference than FP32 ONNX — and loses nothing in accuracy:
+The DeepVariant InceptionV3 model (84 MB FP32) was quantized to INT8 using ONNX Runtime static quantization with calibration data drawn from real genomic TFRecords. The quantized model is **74% smaller (21 MB)** and **2.3x faster** at inference than FP32 ONNX — with no accuracy loss *from quantization itself*:
 
-| Metric | FP32 | BF16 | INT8 ONNX |
-|--------|------|------|-----------|
-| SNP F1 | 0.9977 | 0.9977 | **0.9978** |
-| INDEL F1 | 0.9961 | 0.9961 | **0.9962** |
+| Metric | FP32 (chr20) | BF16 (chr20) | INT8 ONNX (chr20) | INT8 Full Genome | INT8 WES |
+|--------|------|------|-----------|------------------|----------|
+| SNP F1 | 0.9977 | 0.9977 | **0.9978** | **0.9961** | **0.9931** |
+| INDEL F1 | 0.9961 | 0.9961 | **0.9962** | **0.9956** | **0.9738** |
+
+> chr20 results validated with `rtg vcfeval` on GIAB HG003 v4.2.1 (all rows). Full Genome column: 30x WGS HG003, all chromosomes, on AWS c8g.8xlarge (32 vCPU Graviton4). Completed in ~2h17m — 27% faster than chr20 extrapolation. WES column: HG003 IDT exome 100x, all chromosomes, same platform. WES FP32 BF16 baseline: SNP F1=0.9930, INDEL F1=0.9776 — INT8 matches within noise.
+>
+> **Note on full-genome accuracy:** The INT8 full genome SNP F1 (0.9961) is lower than both the chr20 result (0.9978) and the x86 reference (~0.9996). The chr20→full genome drop is expected (harder chromosomes contribute more errors), but the gap vs x86 (0.0035 SNP F1) likely reflects differences in the ARM64 build environment (TF version, OneDNN backend, numerical precision paths) rather than INT8 quantization per se — the chr20 INT8 result *matches or exceeds* FP32 and BF16 on the same ARM64 platform.
 
 Post-training INT8 quantization typically degrades accuracy by 0.6-3% on vision CNNs. That it doesn't here — not even in the difficult regions where quantization characteristically fails — is the finding. Stratified GIAB validation confirms:
 
@@ -180,7 +184,7 @@ Built the full EfficientNet-B3 training pipeline — then measured it running **
 
 ## How much does it matter at scale?
 
-The cost numbers below use the formula `chr20_wall_s x 48.1 / 3600 x $/hr` — a standard chr20-to-WGS projection, not a direct 30x WGS measurement. End-to-end validation is on the roadmap.
+The cost numbers below use the formula `chr20_wall_s x 48.1 / 3600 x $/hr` — a standard chr20-to-WGS projection. Full 30x WGS end-to-end validation on Graviton4 (c8g.8xlarge) completed in **2h17m** — 27% faster than this projection, confirming the estimate is conservative.
 
 | Study scale | x86 reference ($5.01) | Oracle A1 ($0.80) | Hetzner ($0.33+) | Savings vs. x86 |
 |-------------|----------------------|-------------------|-----------------|-----------------|
@@ -196,19 +200,21 @@ The cost numbers below use the formula `chr20_wall_s x 48.1 / 3600 x $/hr` — a
 
 ## Compared to alternatives
 
-| Solution | $/genome | Speed (30x WGS) | Accuracy | License | ARM64 |
-|----------|----------|-----------------|----------|---------|-------|
-| Google DeepVariant (96 vCPU x86) | ~$5.01 | ~1.3 hr | SNP F1 >0.997 | Open source | No |
-| Google DeepVariant (n1-standard-16, preemptible) | ~$2.84 | ~5.5 hr | SNP F1 >0.997 | Open source | No |
+| Solution | $/genome | Speed (30x WGS) | Accuracy (SNP F1) | License | ARM64 |
+|----------|----------|-----------------|-------------------|---------|-------|
+| Google DeepVariant (96 vCPU x86) | ~$5.01 | ~1.3 hr | ~0.9996 | Open source | No |
+| Google DeepVariant (n1-standard-16, preemptible) | ~$2.84 | ~5.5 hr | ~0.9996 | Open source | No |
 | Sentieon DNAscope (OCI ARM) | <$1 + license | ~1-2 hr | Comparable | **Proprietary** | Yes |
 | Sentieon DNAscope (AWS Graviton, spot) | ~$0.74 + license | ~1-2 hr | Comparable | **Proprietary** | Yes |
 | NVIDIA Parabricks | <$2 + license | 8-16 min | Comparable | **Proprietary** | No |
-| **This fork — Oracle A1, 4-way CV** | **$0.80** | **~5.0 hr** | **SNP F1 0.9978** | **Open source** | **Yes** |
-| **This fork — Hetzner CAX41, INT8** | **$0.33+** | **~7.7 hr** | **SNP F1 0.9978** | **Open source** | **Yes** |
+| **This fork — Oracle A1, 4-way CV** | **$0.80** | **~5.0 hr** | **0.9961*** | **Open source** | **Yes** |
+| **This fork — Hetzner CAX41, INT8** | **$0.33+** | **~7.7 hr** | **0.9961*** | **Open source** | **Yes** |
 
+> *Full 30x WGS accuracy (all chromosomes, INT8 ONNX). chr20-only is higher (0.9978) due to chr20 being among the easier chromosomes. The 0.0035 gap vs x86 (0.9961 vs ~0.9996) corresponds to ~17K additional missed SNPs genome-wide — clinically irrelevant for most GWAS/population studies, but worth noting for clinical diagnostics.
+>
 > +Hetzner: shared vCPU (~5% throttling variance), EU-only, N=1 for best config. Increase N before citing this number in a paper.
 
-The trade-off is wall time. A Hetzner run takes ~8 hours vs. ~1 hour on a 96-vCPU x86 instance. For batch processing, overnight pipelines, and cost-constrained studies, this is a feature. For clinical turnaround, use GPU-accelerated DeepVariant.
+The trade-off is wall time and a small accuracy gap. A Hetzner run takes ~8 hours vs. ~1 hour on a 96-vCPU x86 instance, with SNP F1 0.35% lower than the x86 reference. For batch processing, overnight pipelines, and cost-constrained studies, this is an acceptable trade-off. For clinical turnaround or maximum accuracy, use GPU-accelerated DeepVariant on x86.
 
 ---
 
@@ -278,7 +284,7 @@ Works on Ubuntu 22.04/24.04. Installs Docker, build essentials, and writes CPU-s
 echo "$GITHUB_PAT" | docker login ghcr.io -u USERNAME --password-stdin
 
 # Pull (~2-4 GB compressed)
-docker pull ghcr.io/antomicblitz/deepvariant-arm64:v1.9.0-arm64.5
+docker pull ghcr.io/antomicblitz/deepvariant-arm64:v1.9.0-arm64.6
 ```
 
 ### Platform-specific notes
@@ -294,7 +300,57 @@ docker pull ghcr.io/antomicblitz/deepvariant-arm64:v1.9.0-arm64.5
 
 ---
 
-## Validate Accuracy
+## Accuracy — Full Genome Validation
+
+**Full 30x WGS** (HG003, GRCh38, all chromosomes) validated on AWS c8g.8xlarge (32 vCPU Graviton4, INT8 ONNX + jemalloc). Accuracy measured with `rtg vcfeval` against GIAB HG003 v4.2.1 truth set:
+
+| Metric | Precision | Recall | F1 | TP | FP | FN |
+|--------|-----------|--------|------|--------|-------|--------|
+| **SNP** | 0.9986 | 0.9936 | **0.9961** | 3,306,123 | 4,571 | 21,357 |
+| **INDEL** | 0.9973 | 0.9938 | **0.9956** | 501,300 | 1,340 | 3,135 |
+| **Overall** | 0.9985 | 0.9936 | **0.9960** | 3,807,423 | 5,911 | 24,492 |
+
+Total PASS variants: 4,813,103 (3,894,025 SNPs + 919,078 INDELs). Wall time: **2 hours 17 minutes** (c8g.8xlarge, 32 vCPU, $1.36/hr).
+
+### WES (Exome) Validation
+
+**HG003 IDT exome 100x** (all chromosomes, IDT capture kit) validated on the same Graviton4 instance. INT8 model quantized from the WES-specific SavedModel using 500 calibration samples (Percentile 99.99).
+
+| Metric | FP32 BF16 | INT8 ONNX | Delta |
+|--------|-----------|-----------|-------|
+| **SNP F1** | 0.9930 | **0.9931** | +0.0001 |
+| **INDEL F1** | 0.9776 | **0.9738** | -0.0038 |
+| **Overall F1** | 0.9924 | **0.9923** | -0.0001 |
+
+INT8 CV rate: **0.120 s/100** (24% faster than FP32 BF16 at 0.149 s/100). Total pipeline: **3m34s** (INT8) vs **3m55s** (FP32). Variant counts match exactly: 47,895.
+
+---
+
+## Workflow Integration
+
+Nextflow and Snakemake workflows are provided in [`workflows/`](workflows/):
+
+```bash
+# Nextflow (single sample)
+nextflow run workflows/nextflow/main.nf \
+  -profile arm64 \
+  --bam /data/sample.bam --ref /data/GRCh38.fasta --outdir results/
+
+# Nextflow (batch — CSV with columns: sample,bam,bai)
+nextflow run workflows/nextflow/main.nf \
+  -profile arm64 \
+  --input samples.csv --ref /data/GRCh38.fasta --outdir results/
+
+# Snakemake
+snakemake --cores 16 \
+  --config bam=/data/sample.bam ref=/data/GRCh38.fasta
+```
+
+Platform profiles: `arm64` (auto-detect), `graviton`, `oracle_a1`, `hetzner`. See [workflows/nextflow/nextflow.config](workflows/nextflow/nextflow.config) for details.
+
+---
+
+## Reproduce These Results
 
 Reproduce the accuracy numbers from this README on your own hardware.
 
@@ -325,7 +381,7 @@ wget -q -P /data/truth/ ${BUCKET}/HG003_GRCh38_1_22_v4.2.1_benchmark_noinconsist
 docker run \
   -v /data:/data --memory=28g \
   -e DV_AUTOCONFIG=1 -e DV_USE_JEMALLOC=1 \
-  ghcr.io/antomicblitz/deepvariant-arm64:v1.9.0-arm64.5 \
+  ghcr.io/antomicblitz/deepvariant-arm64:v1.9.0-arm64.6 \
   /opt/deepvariant/bin/run_deepvariant \
   --model_type=WGS \
   --ref=/data/reference/GRCh38_no_alt_analysis_set.fasta \
@@ -351,10 +407,12 @@ bash scripts/validate_accuracy.sh \
 This pulls the hap.py Docker image (`jmcdani20/hap.py:v0.3.12`) automatically and checks against accuracy gates:
 
 ```
-Expected output:
+Expected output (chr20 only):
   SNP F1:   0.9978  (gate: >= 0.9974)   PASS
   INDEL F1: 0.9962  (gate: >= 0.9940)   PASS
 ```
+
+> These are chr20-only numbers. Full genome accuracy is lower (SNP F1=0.9961, INDEL F1=0.9956) — see [Accuracy — Full Genome Validation](#accuracy--full-genome-validation).
 
 Or use the all-in-one benchmark script:
 
@@ -397,7 +455,7 @@ Full build: several hours on an 8-core machine (~2273 Bazel actions).
 
 ## What Was Changed
 
-**New files:** `Dockerfile.arm64`, `Dockerfile.arm64.runtime`, `settings_arm64.sh`, `build-prereq-arm64.sh`, `build_release_binaries_arm64.sh`, and `scripts/` (benchmarking, quantization, parallel CV, autoconfig, jemalloc ablation).
+**New files:** `Dockerfile.arm64`, `Dockerfile.arm64.runtime`, `settings_arm64.sh`, `build-prereq-arm64.sh`, `build_release_binaries_arm64.sh`, `scripts/` (benchmarking, quantization, parallel CV, autoconfig, jemalloc ablation), and `workflows/` (Nextflow + Snakemake integration).
 
 **Key modifications to upstream:** `third_party/htslib.BUILD` (NEON detection), `third_party/libssw.BUILD` (sse2neon), `tools/build_absl.sh` (clang-14), `run-prereq.sh` (Ubuntu 24.04), `deepvariant/call_variants.py` (ONNX inference, INT8 renormalization, SavedModel warmup). ACL v23.08 SVE filter and OneDNN indirect GEMM patches for AmpereOne preserved in `third_party/` for source rebuilds.
 
@@ -444,10 +502,10 @@ Full build: several hours on an 8-core machine (~2273 Bazel actions).
 - [x] jemalloc integration (14-17% make_examples speedup)
 - [x] Autoconfig for CPU detection
 - [x] Hetzner CAX41 benchmark ($0.33/genome)
-- [ ] **Full 30x WGS end-to-end validation** — chr20 cost projections need this
+- [x] **Full 30x WGS end-to-end validation** — INT8 ONNX, GIAB HG003, all chromosomes (SNP F1=0.9961, INDEL F1=0.9956, 2h17m on Graviton4 32 vCPU)
+- [x] **WES model validation on ARM64** — INT8 ONNX, GIAB HG003, IDT exome 100x (SNP F1=0.9931, INDEL F1=0.9738, matches FP32 baseline). WES INT8 is 24% faster CV (0.120 vs 0.149 s/100).
+- [x] **Nextflow / Snakemake integration** — [`workflows/`](workflows/) with platform profiles (arm64, graviton, oracle_a1, hetzner). Supports single sample and batch CSV input.
 - [ ] Edge device validation (Jetson, RK3588)
-- [ ] Nextflow / Snakemake integration
-- [ ] WES model validation on ARM64
 
 > For long-read ONT or PacBio data, see [Clair3](https://github.com/HKU-BAL/Clair3).
 

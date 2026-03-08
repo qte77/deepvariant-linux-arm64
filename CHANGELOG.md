@@ -3,6 +3,36 @@
 All notable changes to the DeepVariant ARM64 fork are documented here.
 Upstream compatibility: google/deepvariant v1.9.0
 
+## [Unreleased]
+
+### Added
+- CLAUDE.md: slim entry point (`@AGENTS.md`), original content preserved in
+  `docs/architecture-arm64.md`
+- AGENTS.md: agent behavioral rules, decision framework, dead ends, quality
+  thresholds
+- CONTRIBUTING.md: dev workflow, command reference, coding standards
+- AGENT_LEARNINGS.md: seeded with dead-end patterns from benchmarking history
+- `pyproject.toml`: PEP 440 version, uv dependency-groups, ruff + pyright +
+  pytest + complexipy config
+- `Makefile`: setup_dev, lint, type_check, test, validate, docker_build,
+  benchmark (all via uv)
+- `.claude/settings.json`: marketplace plugins
+- `.devcontainer/devcontainer.json`: Python 3.10, docker-in-docker, uv + dev deps
+- `.github/workflows/codeql.yaml`: CodeQL Python code scanning on push/PR/schedule
+- `.github/dependabot.yaml`: weekly pip dependency updates
+- `.github/PULL_REQUEST_TEMPLATE.md`: structured PR template
+- CI lint-and-typecheck job with `astral-sh/setup-uv` + cache in `arm64-build.yml`
+
+### Changed
+- `setup.py` extracted to `scripts/build_proto.py` (standalone proto generation)
+- Ruff auto-fixes applied to fork scripts (f-strings, import sorting)
+- Pyright scoped to `scripts/build_proto.py` (only stdlib-only fork script);
+  upstream `deepvariant/` ignored
+
+### Removed
+- `__init__.py` (unused with Bazel build)
+- `.github/PULL_REQUEST_TEMPLATE` (replaced by `.md` version)
+
 ## [v1.9.0-arm64.4] — 2026-03-06
 
 ### Added

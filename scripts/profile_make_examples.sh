@@ -56,7 +56,8 @@ REGION="chr20"
 NUM_SHARDS=""
 SKIP_JEMALLOC=false
 OUTPUT_DIR=""
-DOCKER_MEM="28g"
+# Auto-detect: use 90% of available RAM. Hardcoding 28g OOM-kills on <32 GB machines.
+DOCKER_MEM="$(( $(free -g | awk '/^Mem:/{print $2}') * 90 / 100 ))g"
 PERF_FREQ=997
 
 # ============================================================

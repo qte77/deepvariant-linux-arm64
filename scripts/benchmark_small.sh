@@ -21,9 +21,9 @@ REGION="chr20:10000000-15000000"
 NUM_SHARDS=8
 # TF threads — use all available by default.
 TF_THREADS=8
-# Docker memory limit prevents TF from over-allocating.
-# TF's allocator grabs all available RAM; capping at 28GB keeps ~4GB for OS.
-DOCKER_MEM="28g"
+# Auto-detect: use 90% of available RAM. Hardcoding 28g OOM-kills on <32 GB machines.
+# TF's allocator is greedy; capping at 90% keeps headroom for OS.
+DOCKER_MEM="$(( $(free -g | awk '/^Mem:/{print $2}') * 90 / 100 ))g"
 # Batch size for call_variants — 256 keeps peak memory reasonable.
 BATCH_SIZE=256
 

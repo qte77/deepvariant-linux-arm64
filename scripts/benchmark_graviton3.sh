@@ -22,7 +22,8 @@ IMAGE="${IMAGE:-ghcr.io/antomicblitz/deepvariant-arm64:optimized}"
 DATA_DIR="${DATA_DIR:-/data}"
 REGION="chr20:1-30000000"
 BATCH_SIZE=256
-DOCKER_MEM="28g"
+# Auto-detect: use 90% of available RAM. Hardcoding 28g OOM-kills on <32 GB machines.
+DOCKER_MEM="$(( $(free -g | awk '/^Mem:/{print $2}') * 90 / 100 ))g"
 
 # Parse CLI args
 while [[ $# -gt 0 ]]; do

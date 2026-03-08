@@ -40,7 +40,7 @@ The script auto-detects your CPU (Graviton3/4, AmpereOne, Neoverse-N1/N2), enabl
 #### BF16 (Graviton3+, 38% faster CV)
 
 ```bash
-docker run -v /path/to/data:/data --memory=28g \
+docker run -v /path/to/data:/data \
   -e TF_ENABLE_ONEDNN_OPTS=1 -e ONEDNN_DEFAULT_FPMATH_MODE=BF16 \
   -e OMP_NUM_THREADS=$(nproc) -e OMP_PROC_BIND=false -e OMP_PLACES=cores \
   ghcr.io/antomicblitz/deepvariant-arm64:v1.9.0-arm64.6 \
@@ -56,7 +56,7 @@ The Docker image ships with a pre-quantized WGS INT8 model. To quantize a differ
 
 ```bash
 # Step 1: Run the pipeline to generate calibration TFRecords
-docker run -v /path/to/data:/data --memory=28g \
+docker run -v /path/to/data:/data \
   ghcr.io/antomicblitz/deepvariant-arm64:v1.9.0-arm64.6 \
   /opt/deepvariant/bin/run_deepvariant \
   --model_type=WGS --ref=/data/reference.fasta --reads=/data/input.bam \
@@ -73,7 +73,7 @@ docker run -v /path/to/data:/data \
   --saved_model_dir /opt/models/wgs
 
 # Step 3: Use the custom INT8 model
-docker run -v /path/to/data:/data --memory=28g \
+docker run -v /path/to/data:/data \
   ghcr.io/antomicblitz/deepvariant-arm64:v1.9.0-arm64.6 \
   /opt/deepvariant/bin/run_deepvariant \
   --model_type=WGS --ref=/data/reference.fasta --reads=/data/input.bam \
@@ -89,7 +89,7 @@ On NVMe or tmpfs storage, add `--nocompress_intermediates` to skip gzip on TFRec
 <summary>Sequential mode (simpler, no parallel CV)</summary>
 
 ```bash
-docker run -v /path/to/data:/data --memory=28g \
+docker run -v /path/to/data:/data \
   -e DV_AUTOCONFIG=1 -e DV_USE_JEMALLOC=1 \
   ghcr.io/antomicblitz/deepvariant-arm64:v1.9.0-arm64.6 \
   /opt/deepvariant/bin/run_deepvariant \
@@ -379,7 +379,7 @@ wget -q -P /data/truth/ ${BUCKET}/HG003_GRCh38_1_22_v4.2.1_benchmark_noinconsist
 
 ```bash
 docker run \
-  -v /data:/data --memory=28g \
+  -v /data:/data \
   -e DV_AUTOCONFIG=1 -e DV_USE_JEMALLOC=1 \
   ghcr.io/antomicblitz/deepvariant-arm64:v1.9.0-arm64.6 \
   /opt/deepvariant/bin/run_deepvariant \

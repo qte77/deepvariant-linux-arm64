@@ -26,7 +26,8 @@ USE_ONNX=""
 ONNX_MODEL=""
 NUM_SHARDS=""
 BATCH_SIZE=256
-DOCKER_MEM="28g"
+# Auto-detect: use 90% of available RAM. Hardcoding 28g OOM-kills on <32 GB machines.
+DOCKER_MEM="$(( $(free -g | awk '/^Mem:/{print $2}') * 90 / 100 ))g"
 REGION="chr20"
 TF_ONEDNN_OPTS="1"
 

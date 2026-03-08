@@ -9,7 +9,9 @@ set -euo pipefail
 
 IMAGE="ghcr.io/antomicblitz/deepvariant-arm64:optimized"
 DATA_DIR="${DATA_DIR:-/data}"
-DOCKER_MEM="28g"
+# Auto-detect available RAM — use 90% to leave headroom for OS.
+# Hardcoding 28g caused OOM on machines with <32 GB (e.g. Hetzner CAX41 has 30 GB).
+DOCKER_MEM="$(( $(free -g | awk '/^Mem:/{print $2}') * 90 / 100 ))g"
 BATCH_SIZE=256
 REGION="chr20"
 NPROC=$(nproc)

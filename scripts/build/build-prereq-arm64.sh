@@ -104,6 +104,6 @@ sed -i -e 's|pybind11-2.10.0|pybind11-a7b91e33269ab6f3f90167291af2c4179fc878f5|g
 
 note_build_stage "Set pyparsing to 2.2.2 for CLIF."
 export PATH="$HOME/.local/bin":$PATH
-pip3 uninstall -y pyparsing && pip3 install -Iv 'pyparsing==2.2.2'
+uv pip uninstall --system pyparsing && uv pip install --system 'pyparsing==2.2.2'
 
 note_build_stage "build-prereq-arm64.sh complete"

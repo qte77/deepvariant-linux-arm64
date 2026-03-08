@@ -24,7 +24,7 @@ ARG DV_GPU_BUILD
 ARG PYTHON_VERSION
 ENV DV_GPU_BUILD=${DV_GPU_BUILD}
 ENV DV_BIN_PATH=/opt/deepvariant/bin
-ENV PIP_BREAK_SYSTEM_PACKAGES=1
+COPY --from=ghcr.io/astral-sh/uv:latest /uv /usr/local/bin/uv
 
 # Install Python 3.10 from deadsnakes PPA (Ubuntu 24.04 ships 3.12)
 RUN apt-get update -qq && \
@@ -46,5 +46,5 @@ WORKDIR /opt/deepvariant
 # Bazel compilation of all C++ binaries (~1hr native ARM64, ~4hr+ under QEMU)
 RUN chmod +x scripts/build/build-prereq-arm64.sh scripts/build/build_release_binaries_arm64.sh && \
     ./scripts/build/build-prereq-arm64.sh \
-    && PATH="${HOME}/.local/bin:${HOME}/bin:${PATH}" pip3 install --ignore-installed cryptography cffi "httplib2<0.22" \
+    && PATH="${HOME}/.local/bin:${HOME}/bin:${PATH}" uv pip install --system --ignore-installed cryptography cffi "httplib2<0.22" \
     && PATH="${HOME}/bin:${PATH}" ./scripts/build/build_release_binaries_arm64.sh

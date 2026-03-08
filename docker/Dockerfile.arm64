@@ -27,12 +27,12 @@ ARG VERSION
 
 RUN apt-get update -qq && \
     apt-get install -qq -y --no-install-recommends \
-        python3 python3-pip wget ca-certificates && \
+        python3 wget ca-certificates && \
     apt-get clean && rm -rf /var/lib/apt/lists/*
-ENV PIP_BREAK_SYSTEM_PACKAGES=1
+COPY --from=ghcr.io/astral-sh/uv:latest /uv /usr/local/bin/uv
 
 # Reason: tf2onnx needs numpy+onnx+tf; install in models stage to keep runtime clean
-RUN pip3 install --no-cache-dir tf2onnx onnxruntime
+RUN uv pip install --system --no-cache tf2onnx onnxruntime
 
 WORKDIR /opt
 
@@ -97,8 +97,8 @@ RUN wget -q -O /opt/models/wgs/model_int8_static.onnx \
 FROM ${FROM_IMAGE}
 ARG VERSION
 ENV VERSION=${VERSION}
-ENV PIP_BREAK_SYSTEM_PACKAGES=1
 ENV PATH="$PATH:/opt/deepvariant/bin"
+COPY --from=ghcr.io/astral-sh/uv:latest /uv /usr/local/bin/uv
 
 # Reason: single apt-get layer — Python 3.10 (TF requirement), samtools/bcftools
 # (variant calling), parallel (multi-sample), libjemalloc2 (14-17% ME speedup)
@@ -109,20 +109,20 @@ RUN apt-get update -qq && \
     apt-get update -qq && \
     apt-get install -qq -y --no-install-recommends \
         python3.10 python3.10-dev python3.10-distutils \
-        samtools bcftools parallel python3-pip libjemalloc2 wget && \
+        samtools bcftools parallel libjemalloc2 wget && \
     update-alternatives --install /usr/bin/python3 python3 /usr/bin/python3.10 10 && \
     update-alternatives --install /usr/bin/python python /usr/bin/python3.10 10 && \
     apt-get clean autoclean && \
     apt-get autoremove -y --purge && \
     rm -rf /var/lib/apt/lists/*
 
-# Reason: single pip layer — prereqs, ABI fix, ONNX runtime
+# Reason: single uv layer — prereqs, ABI fix, ONNX runtime
 COPY --from=builder /opt/deepvariant/scripts/build/run-prereq.sh /opt/deepvariant/bin/
 COPY --from=builder /opt/deepvariant/scripts/build/settings.sh /opt/deepvariant/bin/
 COPY --from=builder /opt/deepvariant/scripts/build/settings_arm64.sh /opt/deepvariant/bin/
 WORKDIR /opt/deepvariant/bin
 RUN ./run-prereq.sh && \
-    PATH="/root/.local/bin:$PATH" pip3 install --no-cache-dir \
+    uv pip install --system --no-cache \
         --ignore-installed cryptography cffi \
         "httplib2<0.22" absl-py==0.13.0 onnxruntime
 

@@ -23,6 +23,7 @@ Upstream compatibility: google/deepvariant v1.9.0
 ### Changed
 - Moved `TRAINING_EXPERIMENT.md` and `TRAINING_RESUME.md` from root to `docs/`
 - Updated all cross-references to moved files (README, CLAUDE.md, architecture, paper)
+- Replaced pip with uv for all Python package management in ARM64 Docker builds
 - `Dockerfile.arm64`: 36 ADD layers → single wget loop in models stage (~50→15 layers)
 - `Dockerfile.arm64`: merged 2 apt-get + 3 pip install calls into single layers
 - `Dockerfile.arm64`: ONNX conversion moved to models stage (cached independently)

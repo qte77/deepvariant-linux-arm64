@@ -9,13 +9,14 @@ tags:
   - quantization
 authors:
   - name: Antonio Lamb
-    orcid: 0000-0000-0000-0000
+    orcid: 0000-0003-0885-2585
     affiliation: 1
 affiliations:
   - name: Lamb Consulting, Switzerland
     index: 1
 date: 8 March 2026
 bibliography: paper.bib
+archive_doi: "https://doi.org/10.5281/zenodo.18909055"
 ---
 
 # Summary
@@ -43,7 +44,7 @@ Accuracy was validated with `rtg vcfeval` [@Cleary2015] against the Genome in a 
 
 The chr20-to-full-genome drop is expected (harder chromosomes contribute more errors). The gap vs. x86 (~0.9996 SNP F1) likely reflects differences in the ARM64 build environment (TensorFlow version, OneDNN backend, numerical precision paths) rather than INT8 quantization, since the chr20 INT8 result matches or exceeds FP32 and BF16 on the same ARM64 platform.
 
-For WES (HG003 IDT exome 100x), INT8 matches the FP32 baseline (SNP F1 0.9931 vs. 0.9930, Overall F1 0.9923 vs. 0.9924), with a small INDEL F1 reduction ($-$0.0038) within expected post-training quantization variance.
+For WES (HG003 IDT exome 100x), INT8 matches the FP32 baseline (SNP F1 0.9931 vs. 0.9930, Overall F1 0.9923 vs. 0.9924), with a small INDEL F1 reduction ($-0.0038$) within expected post-training quantization variance.
 
 **Five-platform benchmarking corpus:**
 

@@ -1,0 +1,52 @@
+{
+  "@context": "https://doi.org/10.5063/schema/codemeta-2.0",
+  "@type": "SoftwareSourceCode",
+  "name": "DeepVariant Linux ARM64 Native Build",
+  "description": "First open-source Linux ARM64 port of Google DeepVariant v1.9.0, with INT8 ONNX quantization that preserves WGS accuracy (SNP F1 delta <0.0001 vs FP32 on chr20). Delivers 2.3x faster inference, 74% smaller model, parallel call_variants support, and benchmarks across 5 ARM64 platforms at $0.80/genome on Oracle A1.",
+  "identifier": "https://doi.org/10.5281/zenodo.18909055",
+  "codeRepository": "https://github.com/antomicblitz/deepvariant-linux-arm64",
+  "issueTracker": "https://github.com/antomicblitz/deepvariant-linux-arm64/issues",
+  "license": "https://spdx.org/licenses/BSD-3-Clause",
+  "version": "1.9.0-arm64.7",
+  "datePublished": "2026-03-08",
+  "programmingLanguage": [
+    "Python",
+    "C++"
+  ],
+  "operatingSystem": "Linux (ARM64/AArch64)",
+  "runtimePlatform": "Docker",
+  "applicationCategory": "Bioinformatics",
+  "keywords": [
+    "genomics",
+    "variant-calling",
+    "ARM64",
+    "AArch64",
+    "deep-learning",
+    "bioinformatics",
+    "DeepVariant",
+    "INT8-quantization",
+    "ONNX"
+  ],
+  "author": [
+    {
+      "@type": "Person",
+      "givenName": "Antonio",
+      "familyName": "Lamb",
+      "@id": "https://orcid.org/0000-0003-0885-2585",
+      "affiliation": {
+        "@type": "Organization",
+        "name": "Lamb Consulting"
+      }
+    }
+  ],
+  "softwareRequirements": [
+    "Docker (linux/arm64)",
+    "ARM64 Linux host (Graviton, Ampere Altra, AmpereOne, or similar)"
+  ],
+  "isPartOf": {
+    "@type": "SoftwareSourceCode",
+    "name": "Google DeepVariant",
+    "url": "https://github.com/google/deepvariant",
+    "version": "1.9.0"
+  }
+}

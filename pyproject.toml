@@ -1,6 +1,6 @@
 [project]
 name = "deepvariant-linux-arm64"
-version = "1.9.0.post6"
+version = "1.9.0.post7"
 description = "DeepVariant variant caller ported to Linux ARM64 with hardware-accelerated inference"
 license = "BSD-3-Clause"
 requires-python = ">=3.10"

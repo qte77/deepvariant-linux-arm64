@@ -5,6 +5,8 @@ Upstream compatibility: google/deepvariant v1.9.0
 
 ## [Unreleased]
 
+## [v1.9.0-arm64.7] — 2026-03-09
+
 ### Fixed
 - `--ignore-installed` → `--reinstall-package` in Dockerfiles and `run-prereq.sh` for uv 0.10
 - `get-pip.py` bootstrap → `uv pip install` in `build_absl.sh` (PEP 668 on Ubuntu 24.04)

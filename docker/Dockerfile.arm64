@@ -94,10 +94,33 @@ RUN python3 -m tf2onnx.convert --saved-model /opt/models/wgs --output /opt/model
     python3 -m tf2onnx.convert --saved-model /opt/models/wes --output /opt/models/wes/model.onnx --opset 17 && \
     python3 -m tf2onnx.convert --saved-model /opt/models/pacbio --output /opt/models/pacbio/model.onnx --opset 17
 
-# Optional: pre-quantized INT8 WGS model (SNP F1=0.9978, INDEL F1=0.9962, 21 MB vs 84 MB FP32)
+# Ensure quantization deps are available (packaging needed for ORT version check)
+RUN uv pip install --python /opt/venv/bin/python --no-cache packaging
+
+# Dynamic INT8: weights-only quantization, no calibration needed (~21 MB vs 84 MB FP32)
+COPY scripts/quantize_model_onnx.py /opt/scripts/quantize_model_onnx.py
+RUN for model in wgs wes pacbio; do \
+      python3 /opt/scripts/quantize_model_onnx.py \
+        --input /opt/models/${model}/model.onnx \
+        --output /opt/models/${model}/model_int8_dynamic.onnx; \
+    done
+
+# Static INT8: weights + activations, synthetic calibration (Percentile method)
+COPY scripts/quantize_static_onnx.py /opt/scripts/quantize_static_onnx.py
+COPY scripts/synthetic_calibration.py /opt/scripts/synthetic_calibration.py
+RUN for model in wgs wes pacbio; do \
+      python3 /opt/scripts/synthetic_calibration.py \
+        --input /opt/models/${model}/model.onnx \
+        --output /opt/models/${model}/model_int8_static.onnx \
+        --saved_model_dir /opt/models/${model} \
+        --num_calibration_samples 200 \
+        --calibration_method percentile; \
+    done
+
+# Optional: pre-quantized INT8 WGS model from external URL (overrides build-generated)
 ARG INT8_MODEL_URL
 RUN if [ -n "${INT8_MODEL_URL}" ]; then \
-      wget -q -O /opt/models/wgs/model_int8_static.onnx "${INT8_MODEL_URL}"; \
+      wget -q -O /opt/models/wgs/model_int8_external.onnx "${INT8_MODEL_URL}"; \
     fi
 
 # --- Stage 3: runtime --------------------------------------------------------
@@ -168,7 +191,9 @@ RUN for name in make_examples call_variants postprocess_variants vcf_stats_repor
   printf '#!/bin/bash\n/usr/bin/python3 -u /opt/deepvariant/bin/run_deepvariant.py "$@"\n' > \
     /opt/deepvariant/bin/run_deepvariant && chmod +x /opt/deepvariant/bin/run_deepvariant && \
   printf '#!/bin/bash\n/usr/bin/python3 /opt/deepvariant/scripts/quantize_static_onnx.py "$@"\n' > \
-    /opt/deepvariant/bin/quantize_model && chmod +x /opt/deepvariant/bin/quantize_model
+    /opt/deepvariant/bin/quantize_model && chmod +x /opt/deepvariant/bin/quantize_model && \
+  printf '#!/bin/bash\n/usr/bin/python3 /opt/deepvariant/scripts/quantize_model_onnx.py "$@"\n' > \
+    /opt/deepvariant/bin/quantize_dynamic && chmod +x /opt/deepvariant/bin/quantize_dynamic
 
 # Copy models + ONNX conversions from models stage (single layer)
 COPY --from=models /opt/models /opt/models
@@ -179,6 +204,8 @@ COPY scripts/docker_entrypoint.sh /opt/deepvariant/bin/docker_entrypoint.sh
 COPY scripts/autoconfig.sh /opt/deepvariant/scripts/autoconfig.sh
 COPY scripts/run_parallel_cv.sh /opt/deepvariant/scripts/run_parallel_cv.sh
 COPY scripts/quantize_static_onnx.py /opt/deepvariant/scripts/quantize_static_onnx.py
+COPY scripts/quantize_model_onnx.py /opt/deepvariant/scripts/quantize_model_onnx.py
+COPY scripts/synthetic_calibration.py /opt/deepvariant/scripts/synthetic_calibration.py
 COPY scripts/convert_model_onnx.py /opt/deepvariant/scripts/convert_model_onnx.py
 RUN chmod +x /opt/deepvariant/bin/docker_entrypoint.sh \
              /opt/deepvariant/scripts/autoconfig.sh \

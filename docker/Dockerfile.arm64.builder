@@ -18,22 +18,23 @@ ARG DV_GPU_BUILD=0
 ARG VERSION=1.9.0
 
 FROM ${FROM_IMAGE} AS builder
-LABEL maintainer="https://github.com/antomicblitz/deepvariant-linux-arm64/issues"
+LABEL maintainer="https://github.com/qte77/deepvariant-linux-arm64/issues" \
+      org.opencontainers.image.source="https://github.com/qte77/deepvariant-linux-arm64"
 
 ARG DV_GPU_BUILD
 ARG PYTHON_VERSION
 ENV DV_GPU_BUILD=${DV_GPU_BUILD}
 ENV DV_BIN_PATH=/opt/deepvariant/bin
-ENV PIP_BREAK_SYSTEM_PACKAGES=1
+COPY --from=ghcr.io/astral-sh/uv:0.10 /uv /usr/local/bin/uv
 
-# Install Python 3.10 from deadsnakes PPA (Ubuntu 24.04 ships 3.12)
-RUN apt-get update -qq && \
-    apt-get install -qq -y software-properties-common && \
-    add-apt-repository -y ppa:deadsnakes/ppa && \
-    apt-get update -qq && \
-    apt-get install -qq -y python3.10 python3.10-dev python3.10-distutils && \
-    update-alternatives --install /usr/bin/python3 python3 /usr/bin/python3.10 10 && \
-    apt-get clean && rm -rf /var/lib/apt/lists/*
+# Reason: uv manages Python 3.10 — no deadsnakes PPA needed
+# Symlink to /usr/bin/python3 so Bazel and build scripts work unchanged
+RUN uv venv /opt/venv --python 3.10 && \
+    ln -sf /opt/venv/bin/python3 /usr/bin/python3 && \
+    ln -sf /opt/venv/bin/python3 /usr/bin/python && \
+    ln -sf /opt/venv/bin/python3 /usr/bin/python3.10
+ENV VIRTUAL_ENV=/opt/venv
+ENV PATH="/opt/venv/bin:$PATH"
 
 # Copying DeepVariant source code
 COPY . /opt/deepvariant
@@ -46,5 +47,5 @@ WORKDIR /opt/deepvariant
 # Bazel compilation of all C++ binaries (~1hr native ARM64, ~4hr+ under QEMU)
 RUN chmod +x scripts/build/build-prereq-arm64.sh scripts/build/build_release_binaries_arm64.sh && \
     ./scripts/build/build-prereq-arm64.sh \
-    && PATH="${HOME}/.local/bin:${HOME}/bin:${PATH}" pip3 install --ignore-installed cryptography cffi "httplib2<0.22" \
+    && PATH="${HOME}/.local/bin:${HOME}/bin:${PATH}" uv pip install --reinstall-package cryptography --reinstall-package cffi cryptography cffi "httplib2<0.22" \
     && PATH="${HOME}/bin:${PATH}" ./scripts/build/build_release_binaries_arm64.sh

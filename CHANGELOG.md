@@ -5,7 +5,19 @@ Upstream compatibility: google/deepvariant v1.9.0
 
 ## [Unreleased]
 
+## [v1.9.0-arm64.7] — 2026-03-09
+
+### Fixed
+- `--ignore-installed` → `--reinstall-package` in Dockerfiles and `run-prereq.sh` for uv 0.10
+- `get-pip.py` bootstrap → `uv pip install` in `build_absl.sh` (PEP 668 on Ubuntu 24.04)
+- `uv pip install --python` targeting venv explicitly in `build_absl.sh` sudo context
+- `PYTHON_LIB_PATH` override in `settings_arm64.sh` for uv venv `site-packages`
+
+## [v1.9.0-arm64.6] — 2026-03-08
+
 ### Added
+- `.bumpversion.toml`: automated fork version bumping (`bump-my-version`)
+- `.github/workflows/bump-version.yml`: workflow_dispatch version bump
 - `Dockerfile.arm64.builder`: standalone builder-stage Dockerfile for native
   ARM64 Bazel compilation (~1hr native vs ~4hr+ QEMU)
 - `Dockerfile.arm64`: 3-stage build (builder → models → runtime) with
@@ -21,12 +33,21 @@ Upstream compatibility: google/deepvariant v1.9.0
   extended operator fusion (Conv+BN, GEMM+Activation, constant folding)
 
 ### Changed
+- Moved `TRAINING_EXPERIMENT.md` and `TRAINING_RESUME.md` from root to `docs/`
+- Updated all cross-references to moved files (README, CLAUDE.md, architecture, paper)
+- Replaced pip with uv for all Python package management in ARM64 Docker builds
+- Replaced deadsnakes PPA with `uv venv --python 3.10` in all Docker stages
+- Pinned uv to `0.10` (was `latest`)
+- Split lint job from `arm64-build.yml` into dedicated `ci.yml` workflow
 - `Dockerfile.arm64`: 36 ADD layers → single wget loop in models stage (~50→15 layers)
 - `Dockerfile.arm64`: merged 2 apt-get + 3 pip install calls into single layers
 - `Dockerfile.arm64`: ONNX conversion moved to models stage (cached independently)
 - CI `build-arm64` timeout reduced from 240min to 30min (pre-built builder base)
 
 ### Removed
+- deadsnakes PPA dependency (Python 3.10 now managed by uv)
+- `python3-testresources` apt package (pip-era workaround)
+- `get-pip.py` bootstrap in `run-prereq.sh`
 - `Dockerfile.arm64.runtime`: superseded by `Dockerfile.arm64` with BUILDER_IMAGE arg
 - `Dockerfile.arm64`: removed inline builder-local fallback (use .builder file instead)
 

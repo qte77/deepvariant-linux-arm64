@@ -14,7 +14,7 @@
 - **Context**: Model architecture selection for ARM64 inference
 - **Problem**: EfficientNet-B3 has 3.2x fewer FLOPs than InceptionV3 but runs 3x slower on CPU
 - **Solution**: FLOPs do not predict CPU speed. Depthwise separable convolutions produce many small kernel launches with poor data reuse. Dense Conv2D (InceptionV3) maps to single large GEMM calls. Stick with InceptionV3.
-- **References**: `TRAINING_EXPERIMENT.md`, `docs/architecture-arm64.md`
+- **References**: `docs/TRAINING_EXPERIMENT.md`, `docs/architecture-arm64.md`
 
 ### AmpereOne OneDNN SIGILL
 

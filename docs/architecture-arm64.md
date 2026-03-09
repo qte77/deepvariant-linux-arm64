@@ -71,7 +71,7 @@ The `call_variants` step runs Inception V3 (23.9M params) CNN inference on 100×
 - **2A: TF OneDNN warmup (DONE)** — SavedModel warmup gives ~4% call_variants improvement. KMP_AFFINITY and TF_ONEDNN_USE_SYSTEM_ALLOCATOR are **HARMFUL** (30% regression, reverted).
 - **2B: BF16 on Graviton3+ (DONE)** — 1.61x call_variants speedup on Graviton3, zero accuracy loss. See section 2.2b.
 - **2C: INT8 quantization of InceptionV3 (DONE)** — Static INT8 via ONNX Runtime gives 2.3x over ONNX FP32 but matches BF16 (no additional gain on Graviton3). Viable alternative for non-BF16 platforms. Dynamic INT8 unsupported on ARM64 (ConvInteger op missing).
-- **~~2D: EfficientNet-B3~~** — **DEAD END.** 3x slower on CPU. Depthwise separable convolutions have poor GEMM density. This generalizes to ALL "efficient" CNN architectures (MobileNetV2, MnasNet, etc.). See `TRAINING_EXPERIMENT.md`.
+- **~~2D: EfficientNet-B3~~** — **DEAD END.** 3x slower on CPU. Depthwise separable convolutions have poor GEMM density. This generalizes to ALL "efficient" CNN architectures (MobileNetV2, MnasNet, etc.). See `docs/TRAINING_EXPERIMENT.md`.
 
 **Phase 2 ONNX status:** The `--use_onnx` flag is implemented and works. On Neoverse-N1 (no BF16), ONNX CPUExecutionProvider is slower than TF+OneDNN. On Graviton3+ with BF16, ONNX MLAS BF16 is configured but INT8 ONNX matches BF16 TF+OneDNN speed (0.225 vs 0.232 s/100) — no additional gain from ONNX BF16.
 
@@ -431,7 +431,7 @@ Oracle A2's sequential CV (283s at 32 ORT threads) wastes 16 threads' worth of G
 
 ### 2.3 EfficientNet-B3 Model (DEAD END)
 
-**Attempted and measured.** Despite 3.2x fewer FLOPs, EfficientNet-B3 is **3x slower** than InceptionV3 on CPU inference. The full training pipeline was built and validated (see `TRAINING_EXPERIMENT.md`), but the speed result kills this approach.
+**Attempted and measured.** Despite 3.2x fewer FLOPs, EfficientNet-B3 is **3x slower** than InceptionV3 on CPU inference. The full training pipeline was built and validated (see `docs/TRAINING_EXPERIMENT.md`), but the speed result kills this approach.
 
 **Root cause:** EfficientNet's depthwise separable convolutions and squeeze-and-excitation blocks produce many small kernel launches with poor data reuse, while InceptionV3's dense `Conv2D` operations map to single large GEMM calls with high arithmetic intensity. FLOPs ≠ speed on CPUs.
 
@@ -472,7 +472,7 @@ Oracle A2's sequential CV (283s at 32 ORT threads) wastes 16 threads' worth of G
 
 ### EfficientNet-B3: Attempted and Failed
 
-The full training pipeline was built and a model was trained (see `TRAINING_EXPERIMENT.md`). However, CPU inference benchmarking showed EfficientNet-B3 is **3x slower** than InceptionV3 despite having 3.2x fewer FLOPs. This is because EfficientNet's depthwise separable convolutions and squeeze-and-excitation blocks have poor computational density on CPUs — many small operations with poor cache reuse vs InceptionV3's large dense GEMM calls.
+The full training pipeline was built and a model was trained (see `docs/TRAINING_EXPERIMENT.md`). However, CPU inference benchmarking showed EfficientNet-B3 is **3x slower** than InceptionV3 despite having 3.2x fewer FLOPs. This is because EfficientNet's depthwise separable convolutions and squeeze-and-excitation blocks have poor computational density on CPUs — many small operations with poor cache reuse vs InceptionV3's large dense GEMM calls.
 
 **The ISPRAS paper's accuracy improvements may be real, but are irrelevant if the model is 3x slower on our target hardware (ARM64 CPUs without GPU).**
 
@@ -944,4 +944,4 @@ deepvariant-linux-arm64/
 
 6. **BF16 fast math on Graviton3+.** Graviton3 and newer support BF16 operations. Enable via `ONEDNN_DEFAULT_FPMATH_MODE=BF16`. Accuracy validated: BF16 = FP32 (SNP F1=0.9977, INDEL F1=0.9961 — identical). 38% call_variants speedup on Graviton3, zero accuracy loss.
 
-7. **EfficientNet-B3 is NOT faster than InceptionV3 on CPU.** Benchmarked at 0.31x the speed of InceptionV3 (3x slower) despite 3.2x fewer FLOPs. Depthwise separable convolutions and squeeze-and-excitation blocks produce many small operations with poor data reuse, while InceptionV3's dense Conv2D operations map to single large GEMM calls. FLOP count does not predict CPU inference speed — kernel efficiency and memory access patterns matter more. See `TRAINING_EXPERIMENT.md`.
+7. **EfficientNet-B3 is NOT faster than InceptionV3 on CPU.** Benchmarked at 0.31x the speed of InceptionV3 (3x slower) despite 3.2x fewer FLOPs. Depthwise separable convolutions and squeeze-and-excitation blocks produce many small operations with poor data reuse, while InceptionV3's dense Conv2D operations map to single large GEMM calls. FLOP count does not predict CPU inference speed — kernel efficiency and memory access patterns matter more. See `docs/TRAINING_EXPERIMENT.md`.

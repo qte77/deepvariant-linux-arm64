@@ -139,24 +139,23 @@ ENV PATH="/opt/venv/bin:$PATH"
 # Runtime Python deps installed by:
 #   1. run-prereq.sh — upstream Google prereqs (~30 pkgs including etils,
 #      protobuf, pysam, jax, tf-models-official, etc.)
-#   2. This RUN layer — ARM64-specific fixes + additions:
-#      - cryptography/cffi: force-reinstall for ARM64 ABI compatibility
-#      - httplib2: pinned below 0.22 for compatibility
-#      - absl-py: pinned for DeepVariant runtime
-#      - onnxruntime: ARM64 ONNX inference engine (not in upstream prereqs)
-#      - etils: re-listed because uv's resolver drops it during the
-#        --reinstall-package pass (run-prereq.sh:101 installs it, but the
-#        resolver recalculation here clobbers it — confirmed by CI failure:
-#        "ModuleNotFoundError: No module named 'etils'" in make_examples.py)
-# Avoid duplicating other run-prereq.sh deps here unless similarly clobbered.
+#   2. ARM64 fixes — cryptography/cffi ABI rebuild, httplib2 pin, absl-py pin
+#   3. ARM64 additions — onnxruntime (not in upstream prereqs)
+#   4. Post-install guard — etils reinstall (uv resolver drops it during the
+#      --reinstall-package pass; confirmed by CI: "No module named 'etils'")
+# Do NOT duplicate run-prereq.sh deps here unless similarly clobbered.
 COPY --from=builder /opt/deepvariant/scripts/build/run-prereq.sh /opt/deepvariant/bin/
 COPY --from=builder /opt/deepvariant/scripts/build/settings.sh /opt/deepvariant/bin/
 COPY --from=builder /opt/deepvariant/scripts/build/settings_arm64.sh /opt/deepvariant/bin/
 WORKDIR /opt/deepvariant/bin
+# Reason: single RUN layer — prereqs + ARM64 fixes + smoke test (minimises image layers)
+# etils installed separately AFTER the --reinstall-package pass to avoid resolver clobber
 RUN ./run-prereq.sh && \
     uv pip install --no-cache \
         --reinstall-package cryptography --reinstall-package cffi \
-        cryptography cffi "httplib2<0.22" absl-py==0.13.0 onnxruntime etils
+        cryptography cffi "httplib2<0.22" absl-py==0.13.0 onnxruntime && \
+    uv pip install --no-cache etils && \
+    python3 -c "import etils, onnxruntime; print(f'OK: etils {etils.__version__}, ort {onnxruntime.__version__}')"
 
 # Copy Bazel binaries from builder (single COPY for all zips)
 COPY --from=builder /opt/deepvariant/bazel-bin/licenses.zip /opt/

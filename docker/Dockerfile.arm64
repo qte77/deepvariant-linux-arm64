@@ -17,6 +17,8 @@
 ARG BUILDER_IMAGE=ghcr.io/qte77/deepvariant-linux-arm64:base-builder-v1.9.0
 ARG FROM_IMAGE=arm64v8/ubuntu:24.04
 ARG VERSION=1.9.0
+# Optional: URL to pre-quantized INT8 WGS model. Empty = skip download.
+ARG INT8_MODEL_URL=""
 
 # --- Stage 1: pre-built Bazel binaries ---------------------------------------
 FROM ${BUILDER_IMAGE} AS builder
@@ -92,9 +94,11 @@ RUN python3 -m tf2onnx.convert --saved-model /opt/models/wgs --output /opt/model
     python3 -m tf2onnx.convert --saved-model /opt/models/wes --output /opt/models/wes/model.onnx --opset 17 && \
     python3 -m tf2onnx.convert --saved-model /opt/models/pacbio --output /opt/models/pacbio/model.onnx --opset 17
 
-# Pre-validated INT8 WGS model (SNP F1=0.9978, INDEL F1=0.9962, 21 MB vs 84 MB FP32)
-RUN wget -q -O /opt/models/wgs/model_int8_static.onnx \
-      https://github.com/antomicblitz/deepvariant-linux-arm64/releases/download/v1.9.0-arm64.5/model_int8_static.onnx
+# Optional: pre-quantized INT8 WGS model (SNP F1=0.9978, INDEL F1=0.9962, 21 MB vs 84 MB FP32)
+ARG INT8_MODEL_URL
+RUN if [ -n "${INT8_MODEL_URL}" ]; then \
+      wget -q -O /opt/models/wgs/model_int8_static.onnx "${INT8_MODEL_URL}"; \
+    fi
 
 # --- Stage 3: runtime --------------------------------------------------------
 FROM ${FROM_IMAGE}

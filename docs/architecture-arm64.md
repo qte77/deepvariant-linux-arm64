@@ -551,26 +551,84 @@ RUN bazel build --config=mkl_aarch64_threadpool \
 ### CI Pipeline (GitHub Actions)
 
 ```yaml
-# .github/workflows/arm64-build.yml
+# .github/workflows/arm64-build.yml — 4 jobs
 jobs:
-  build-arm64:
-    runs-on: ubuntu-latest  # with QEMU for ARM64, or self-hosted Graviton runner
-    steps:
-      - uses: docker/setup-qemu-action@v3
-        with:
-          platforms: arm64
-      - name: Build ARM64 Docker image
-        run: docker buildx build --platform linux/arm64 -f docker/Dockerfile.arm64 .
-      
-  test-accuracy:
-    needs: build-arm64
-    runs-on: [self-hosted, arm64]  # Graviton runner
-    steps:
-      - name: Run HG003 chr20 benchmark
-        run: bash scripts/benchmark_arm64.sh --accuracy
-      - name: Compare VCF against x86 reference
-        run: rtg vcfeval --baseline ref_x86.vcf.gz --calls arm64.vcf.gz
+  build-builder:    # manual dispatch only — Bazel from source (~1-2hr)
+  build-arm64:      # runtime image (~10min native ARM64)
+  quantize-int8:    # static INT8 quantization with real calibration (~8-10min)
+  test-accuracy:    # HG003 chr20 hap.py validation
 ```
+
+Uses native ARM64 runners (`ubuntu-24.04-arm`) — no QEMU emulation.
+Builder tag derived dynamically from `.bumpversion.toml` upstream version.
+
+### INT8 Calibration Pipeline (CI-based)
+
+**Design decision:** INT8 quantization runs in CI, not during Docker build.
+
+**Why not in Docker build:**
+- `make_examples` (needed to generate calibration TFRecords) requires reference FASTA (~900MB) + BAM data
+- The `models` build stage has no `make_examples` binary
+- Adding downloads + `make_examples` to the build makes it fragile and non-reproducible
+- The existing `INT8_MODEL_URL` build arg already supports downloading pre-quantized models
+
+**Why not dynamic INT8:**
+Dynamic INT8 quantization produces `ConvInteger(10)` ops unsupported by ARM64
+`CPUExecutionProvider` in ONNX Runtime. Static INT8 with real calibration data
+is the only viable path (see section 2.2c).
+
+**Why not synthetic calibration:**
+Synthetic random inputs in `[-1, 1]` don't represent real pileup image activation
+distributions. InceptionV3 is fragile to quantize — ImageNet accuracy drops from
+74.6% to 21.0% with bad calibration (MinMax). Real TFRecords from `make_examples`
+ensure calibration ranges match production inference.
+
+**Pipeline flow:**
+
+```text
+build-arm64 (Docker image)
+    │
+    ├── quantize-int8 (parallel with test-accuracy)
+    │     1. Download GRCh38 reference + HG003 chr20 BAM (~3 min)
+    │     2. make_examples on chr20:10M-15M, 4 shards (~2 min)
+    │        → ~2300 TFRecords (well above 500 needed)
+    │     3. quantize_static_onnx.py, Percentile 99.99 (~3-5 min)
+    │     4. Upload model_int8_static_wgs.onnx as artifact
+    │
+    └── test-accuracy (HG003 chr20 hap.py)
+```
+
+**Calibration data:** HG003 chr20 BAM (same as accuracy validation), GRCh38
+reference from NCBI. Region `chr20:10M-15M` (5MB) yields ~2300 pileup examples
+at 35x WGS coverage — 4.6x the 500-sample minimum.
+
+**WES/PacBio models:** TODO — WGS TFRecords may not be representative for
+WES/PacBio activation distributions. Cross-domain calibration accuracy needs
+validation. For now, only WGS is quantized in CI. WES/PacBio can be added when
+model-specific BAMs are sourced and accuracy is validated with hap.py.
+
+**Runner selection and pricing:**
+
+| Runner | vCPU | RAM | Storage | Cost | Availability |
+|--------|------|-----|---------|------|--------------|
+| `ubuntu-24.04-arm` | 4 | 16 GB | 14 GB | **Free** (public repos) | All plans |
+| Larger 4-core | 4 | 16 GB | — | $0.008/min | Team/Enterprise (runner groups) |
+| Larger 8-core | 8 | 32 GB | — | $0.014/min | Team/Enterprise (runner groups) |
+| Larger 16-core | 16 | 64 GB | — | $0.026/min | Team/Enterprise (runner groups) |
+| Larger 32-core | 32 | 128 GB | — | $0.050/min | Team/Enterprise (runner groups) |
+| Larger 64-core | 64 | 256 GB | — | $0.098/min | Team/Enterprise (runner groups) |
+
+Default: `ubuntu-24.04-arm` (free tier). Configurable via `workflow_dispatch`
+dropdown. Larger runners require org-level runner group setup — they cannot be
+targeted by simple label changes alone.
+
+Prices reflect the January 2026 reduction (up to 39% lower). Private repos use
+included minutes first, then per-minute billing. Larger runners are always billed.
+
+Sources:
+- [Actions runner pricing](https://docs.github.com/en/billing/reference/actions-runner-pricing)
+- [GitHub-hosted runners reference](https://docs.github.com/en/actions/reference/runners/github-hosted-runners)
+- [ARM64 runners announcement](https://github.com/orgs/community/discussions/148648)
 
 ***
 

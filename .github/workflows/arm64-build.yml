@@ -26,6 +26,16 @@ on:
         options:
           - 'false'
           - 'true'
+      quantize_runner:
+        description: >-
+          ARM64 runner for INT8 quantization. Default: ubuntu-24.04-arm (free, 4 vCPU).
+          Larger runners require runner groups (Team/Enterprise plans).
+          Pricing: https://docs.github.com/en/billing/reference/actions-runner-pricing
+        required: false
+        default: 'ubuntu-24.04-arm'
+        type: choice
+        options:
+          - 'ubuntu-24.04-arm'
 
 env:
   DOCKER_IMAGE: deepvariant-arm64
@@ -141,6 +151,123 @@ jobs:
             BUILDER_IMAGE=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ steps.version.outputs.builder_tag }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
+
+  # INT8 static quantization using real calibration data (WGS pileup images).
+  # Generates TFRecords via make_examples on a small chr20 region, then runs
+  # quantize_static_onnx.py with Percentile calibration (safe for InceptionV3).
+  # Reason: dynamic INT8 doesn't work on ARM64 — ConvInteger(10) ops unsupported
+  # by CPUExecutionProvider. Static INT8 with real data is the only viable path.
+  #
+  # Runner pricing (ARM64 Linux, as of 2026-01):
+  #   ubuntu-24.04-arm (4 vCPU, 16GB) — free for public repos, $0.005/min private
+  #   Larger runners require runner groups (Team/Enterprise plans):
+  #     4-core $0.008/min, 8-core $0.014/min, 16-core $0.026/min,
+  #     32-core $0.050/min, 64-core $0.098/min
+  # Sources:
+  #   https://docs.github.com/en/billing/reference/actions-runner-pricing
+  #   https://docs.github.com/en/actions/reference/runners/github-hosted-runners
+  #   https://github.com/orgs/community/discussions/148648
+  quantize-int8:
+    name: INT8 Static Quantization (WGS)
+    needs: build-arm64
+    runs-on: ${{ inputs.quantize_runner || 'ubuntu-24.04-arm' }}
+    if: always() && needs.build-arm64.result == 'success'
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      packages: read
+    env:
+      DATA_DIR: /tmp/calibration-data
+      OUTPUT_DIR: /tmp/int8-output
+      IMAGE_TAG: ${{ github.sha }}
+      # Reason: 5MB region yields ~2300 examples — well above the 500 needed
+      CALIBRATION_REGION: "chr20:10000000-15000000"
+      NUM_SHARDS: "4"
+      NUM_CALIBRATION_SAMPLES: "500"
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Read project version
+        id: version
+        run: |
+          version=$(grep '^current_version' .bumpversion.toml | sed 's/.*= *"//;s/"//')
+          echo "tag=v${version}" >> "$GITHUB_OUTPUT"
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Pull runtime image
+        run: |
+          docker pull "${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${IMAGE_TAG}"
+
+      - name: Download calibration data (reference + BAM)
+        run: |
+          mkdir -p "${DATA_DIR}" "${OUTPUT_DIR}"
+          NCBI_REF_DIR="https://ftp.ncbi.nlm.nih.gov/genomes/all/GCA/000/001/405/GCA_000001405.15_GRCh38/seqs_for_alignment_pipelines.ucsc_ids"
+          GCS_DIR="https://storage.googleapis.com/deepvariant/case-study-testdata"
+          REF="GRCh38_no_alt_analysis_set.fasta"
+          BAM="HG003.novaseq.pcr-free.35x.dedup.grch38_no_alt.chr20.bam"
+
+          echo "Downloading reference FASTA (~900MB compressed)..."
+          curl -sS "${NCBI_REF_DIR}/GCA_000001405.15_GRCh38_no_alt_analysis_set.fna.gz" \
+            | gunzip > "${DATA_DIR}/${REF}"
+          curl -sS -o "${DATA_DIR}/${REF}.fai" \
+            "${NCBI_REF_DIR}/GCA_000001405.15_GRCh38_no_alt_analysis_set.fna.fai"
+
+          echo "Downloading BAM + index..."
+          curl -sS -o "${DATA_DIR}/${BAM}" "${GCS_DIR}/${BAM}"
+          curl -sS -o "${DATA_DIR}/${BAM}.bai" "${GCS_DIR}/${BAM}.bai"
+
+      - name: Generate calibration TFRecords (make_examples)
+        run: |
+          IMAGE="${REGISTRY}/${IMAGE_NAME}:${IMAGE_TAG}"
+          echo "Running make_examples on ${CALIBRATION_REGION} (${NUM_SHARDS} shards)..."
+          docker run --rm \
+            -v "${DATA_DIR}:/data" \
+            -v "${OUTPUT_DIR}:/output" \
+            "${IMAGE}" \
+            /opt/deepvariant/bin/make_examples \
+              --mode=calling \
+              --ref="/data/GRCh38_no_alt_analysis_set.fasta" \
+              --reads="/data/HG003.novaseq.pcr-free.35x.dedup.grch38_no_alt.chr20.bam" \
+              --regions="${CALIBRATION_REGION}" \
+              --examples="/output/calibration.tfrecord@${NUM_SHARDS}.gz"
+
+          echo "Generated TFRecords:"
+          ls -lh "${OUTPUT_DIR}"/calibration.tfrecord-*
+
+      - name: Run static INT8 quantization (WGS, Percentile)
+        run: |
+          IMAGE="${REGISTRY}/${IMAGE_NAME}:${IMAGE_TAG}"
+          echo "Quantizing WGS model (${NUM_CALIBRATION_SAMPLES} samples, Percentile)..."
+          docker run --rm \
+            -v "${OUTPUT_DIR}:/output" \
+            "${IMAGE}" \
+            python3 /opt/deepvariant/scripts/quantize_static_onnx.py \
+              --input /opt/models/wgs/model.onnx \
+              --output /output/model_int8_static_wgs.onnx \
+              --tfrecord_dir /output \
+              --saved_model_dir /opt/models/wgs \
+              --num_calibration_samples "${NUM_CALIBRATION_SAMPLES}" \
+              --calibration_method percentile
+
+          echo "INT8 model size:"
+          ls -lh "${OUTPUT_DIR}"/model_int8_static_wgs.onnx
+
+          # TODO: WES and PacBio calibration — WGS TFRecords may not be
+          # representative for WES/PacBio activation distributions. Needs
+          # model-specific BAM data or cross-domain accuracy validation.
+          # For now, only WGS is quantized in CI.
+
+      - name: Upload INT8 model artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: int8-models-${{ steps.version.outputs.tag }}
+          path: /tmp/int8-output/model_int8_static_wgs.onnx
 
   test-accuracy:
     name: Accuracy Validation (chr20)

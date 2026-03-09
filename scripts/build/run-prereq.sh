@@ -56,9 +56,7 @@ if [[ "$EUID" = "0" ]]; then
   # https://github.com/NVIDIA/nvidia-docker/issues/1632#issuecomment-1112667716
   rm -f /etc/apt/sources.list.d/cuda.list
   rm -f /etc/apt/sources.list.d/nvidia-ml.list
-  # Ensure sudo exists, even if we don't need it.
   apt-get update "${APT_ARGS[@]}" > /dev/null
-  apt-get install "${APT_ARGS[@]}" sudo > /dev/null
   UV_ARGS=(
     "--quiet")
 else
@@ -68,7 +66,7 @@ fi
 
 note_build_stage "Update package list"
 
-sudo -H apt-get update "${APT_ARGS[@]}" > /dev/null
+$SUDO -H apt-get update "${APT_ARGS[@]}" > /dev/null
 
 note_build_stage "run-prereq.sh: Install development packages"
 
@@ -76,13 +74,13 @@ note_build_stage "run-prereq.sh: Install development packages"
 wait_for_dpkg_lock
 
 # See https://askubuntu.com/questions/909277.
-sudo -H DEBIAN_FRONTEND=noninteractive apt-get install "${APT_ARGS[@]}" pkg-config zip zlib1g-dev unzip curl git wget > /dev/null
+$SUDO -H DEBIAN_FRONTEND=noninteractive apt-get install "${APT_ARGS[@]}" pkg-config zip zlib1g-dev unzip curl git wget > /dev/null
 
 note_build_stage "Install python3 packaging infrastructure"
 
 # Fix this error:
 # "error: command 'x86_64-linux-gnu-gcc' failed: No such file or directory"
-sudo -H apt-get install "${APT_ARGS[@]}" "gcc"
+$SUDO -H apt-get install "${APT_ARGS[@]}" "gcc"
 
 # uv is installed via COPY --from in Dockerfiles; verify it's available
 if ! command -v uv &>/dev/null; then
@@ -212,15 +210,15 @@ if [[ "${DV_GPU_BUILD}" = "1" ]]; then
       echo "Installing CUDA..."
       UBUNTU_VERSION="2204"
       curl -O https://developer.download.nvidia.com/compute/cuda/repos/ubuntu${UBUNTU_VERSION}/x86_64/cuda-ubuntu${UBUNTU_VERSION}.pin
-      sudo mv cuda-ubuntu${UBUNTU_VERSION}.pin /etc/apt/preferences.d/cuda-repository-pin-600
+      $SUDO mv cuda-ubuntu${UBUNTU_VERSION}.pin /etc/apt/preferences.d/cuda-repository-pin-600
 
-      curl https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2204/x86_64/3bf863cc.pub | gpg --dearmor | sudo tee /usr/share/keyrings/nvidia-cuda-archive-keyring.gpg > /dev/null
+      curl https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2204/x86_64/3bf863cc.pub | gpg --dearmor | $SUDO tee /usr/share/keyrings/nvidia-cuda-archive-keyring.gpg > /dev/null
       echo \
         "deb [signed-by=/usr/share/keyrings/nvidia-cuda-archive-keyring.gpg] https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2204/x86_64/ /" | \
-        sudo tee /etc/apt/sources.list.d/cuda.list > /dev/null
-      sudo -H NEEDRESTART_MODE=a apt-get update "${APT_ARGS[@]}"
-      sudo -H DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=a apt-get full-upgrade "${APT_ARGS[@]}"
-      sudo -H DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=a apt-get install "${APT_ARGS[@]}" cuda-11-8
+        $SUDO tee /etc/apt/sources.list.d/cuda.list > /dev/null
+      $SUDO -H NEEDRESTART_MODE=a apt-get update "${APT_ARGS[@]}"
+      $SUDO -H DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=a apt-get full-upgrade "${APT_ARGS[@]}"
+      $SUDO -H DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=a apt-get install "${APT_ARGS[@]}" cuda-11-8
     fi
     echo "Checking for CUDNN..."
     if [[ ! -e /usr/local/cuda-11/include/cudnn.h ]]; then
@@ -228,13 +226,13 @@ if [[ "${DV_GPU_BUILD}" = "1" ]]; then
       CUDNN_TAR_FILE="cudnn-linux-x86_64-8.6.0.163_cuda11-archive.tar.xz"
       wget -q https://developer.download.nvidia.com/compute/redist/cudnn/v8.6.0/local_installers/11.8/${CUDNN_TAR_FILE}
       tar -xvf ${CUDNN_TAR_FILE}
-      sudo cp -P cudnn-linux-x86_64-8.6.0.163_cuda11-archive/include/cudnn.h /usr/local/cuda-11/include
-      sudo cp -P cudnn-linux-x86_64-8.6.0.163_cuda11-archive/lib/libcudnn* /usr/local/cuda-11/lib64/
-      sudo chmod a+r /usr/local/cuda-11/lib64/libcudnn*
-      sudo ldconfig
+      $SUDO cp -P cudnn-linux-x86_64-8.6.0.163_cuda11-archive/include/cudnn.h /usr/local/cuda-11/include
+      $SUDO cp -P cudnn-linux-x86_64-8.6.0.163_cuda11-archive/lib/libcudnn* /usr/local/cuda-11/lib64/
+      $SUDO chmod a+r /usr/local/cuda-11/lib64/libcudnn*
+      $SUDO ldconfig
     fi
     # Tensorflow says to do this.
-    sudo -H NEEDRESTART_MODE=a apt-get install "${APT_ARGS[@]}" libcupti-dev > /dev/null
+    $SUDO -H NEEDRESTART_MODE=a apt-get install "${APT_ARGS[@]}" libcupti-dev > /dev/null
   fi
 
   # If we are doing a gpu-build, nvidia-smi should be install. Run it so we
@@ -256,17 +254,17 @@ if [[ "${DV_GPU_BUILD}" = "1" ]]; then
   echo "For debugging:"
   uv pip show tensorrt
   TENSORRT_PATH=$(python3 -c 'import tensorrt; print(tensorrt.__path__[0])')
-  sudo ln -sf "${TENSORRT_PATH}/libnvinfer.so.8" "${TENSORRT_PATH}/libnvinfer.so.7"
-  sudo ln -sf "${TENSORRT_PATH}/libnvinfer_plugin.so.8" "${TENSORRT_PATH}/libnvinfer_plugin.so.7"
+  $SUDO ln -sf "${TENSORRT_PATH}/libnvinfer.so.8" "${TENSORRT_PATH}/libnvinfer.so.7"
+  $SUDO ln -sf "${TENSORRT_PATH}/libnvinfer_plugin.so.8" "${TENSORRT_PATH}/libnvinfer_plugin.so.7"
   export LD_LIBRARY_PATH="${LD_LIBRARY_PATH-}:${TENSORRT_PATH}"
-  sudo ldconfig
+  $SUDO ldconfig
   # Just in case this still doesn't work, we link them.
   # This is a workaround that we might want to get rid of, if we can make sure
-  # setting LD_LIBRARY_PATH and `sudo ldconfig`` works.
+  # setting LD_LIBRARY_PATH and `$SUDO ldconfig`` works.
   if [[ ! -e /usr/local/nvidia/lib ]]; then
-    sudo mkdir -p /usr/local/nvidia/lib
-    sudo ln -sf "${TENSORRT_PATH}/libnvinfer.so.7" /usr/local/nvidia/lib/libnvinfer.so.7
-    sudo ln -sf "${TENSORRT_PATH}/libnvinfer_plugin.so.7" /usr/local/nvidia/lib/libnvinfer_plugin.so.7
+    $SUDO mkdir -p /usr/local/nvidia/lib
+    $SUDO ln -sf "${TENSORRT_PATH}/libnvinfer.so.7" /usr/local/nvidia/lib/libnvinfer.so.7
+    $SUDO ln -sf "${TENSORRT_PATH}/libnvinfer_plugin.so.7" /usr/local/nvidia/lib/libnvinfer_plugin.so.7
   fi
 fi
 
@@ -277,10 +275,10 @@ fi
 note_build_stage "Install other packages"
 
 # for htslib
-sudo -H NEEDRESTART_MODE=a apt-get install "${APT_ARGS[@]}" libssl-dev libcurl4-openssl-dev liblz-dev libbz2-dev liblzma-dev > /dev/null
+$SUDO -H NEEDRESTART_MODE=a apt-get install "${APT_ARGS[@]}" libssl-dev libcurl4-openssl-dev liblz-dev libbz2-dev liblzma-dev > /dev/null
 
 # for the debruijn graph
-sudo -H NEEDRESTART_MODE=a apt-get install "${APT_ARGS[@]}" libboost-graph-dev > /dev/null
+$SUDO -H NEEDRESTART_MODE=a apt-get install "${APT_ARGS[@]}" libboost-graph-dev > /dev/null
 
 # Just being safe, downgrade load-bearing dependencies at the end if needed.
 uv pip install "${UV_ARGS[@]}" 'protobuf==4.21.9'

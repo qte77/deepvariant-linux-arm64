@@ -84,10 +84,7 @@ cd ../..
 rm -rf abseil-cpp
 
 # Install python runtime and test dependencies
-# Reason: uv manages the venv; --python targets it when running as root via sudo
-uv pip install --python /opt/venv/bin/python3 \
-    absl-py \
-    parameterized
+uv pip install absl-py parameterized
 
 # On GPU machines, this might be necessary because of the reason mentioned in:
 # https://stackoverflow.com/a/74605488

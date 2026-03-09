@@ -106,6 +106,13 @@ export USE_DEFAULT_PYTHON_LIB_PATH=1
 # upgraded again.
 export DV_COPT_FLAGS="--copt=-march=corei7 --copt=-Wno-sign-compare --copt=-Wno-write-strings --experimental_build_setting_api --java_runtime_version=remotejdk_11"
 
+# Reason: Docker runs as root — sudo is a no-op that drops env vars (VIRTUAL_ENV, PATH)
+if [[ "${EUID:-$(id -u)}" -eq 0 ]]; then
+  SUDO=""
+else
+  SUDO="sudo"
+fi
+
 function note_build_stage {
   echo "========== [$(date)] Stage '${1}' starting"
 }
@@ -115,7 +122,7 @@ function wait_for_dpkg_lock {
   echo "Calling wait_for_dpkg_lock."
   max_wait=300
   i=0
-  while sudo fuser /var/lib/dpkg/{lock,lock-frontend} >/dev/null 2>&1 ; do
+  while $SUDO fuser /var/lib/dpkg/{lock,lock-frontend} >/dev/null 2>&1 ; do
     echo "Waiting to obtain dpkg lock.."
     sleep 10
     ((i=i+10))

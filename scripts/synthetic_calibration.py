@@ -25,6 +25,16 @@ import json
 import os
 
 
+def _check_ort_version():
+    """Verify ORT >= 1.17.0 for ARM64 INT8 MLAS kernel support."""
+    import onnxruntime as ort
+    from packaging.version import Version
+    if Version(ort.__version__) < Version('1.17.0'):
+        raise RuntimeError(
+            f'ONNX Runtime >= 1.17.0 required for ARM64 INT8 MLAS kernels '
+            f'(SMMLA support). Found: {ort.__version__}')
+
+
 class SyntheticCalibrationDataReader:
     """Generates random float32 inputs in [-1, 1] for ONNX static calibration.
 
@@ -39,9 +49,10 @@ class SyntheticCalibrationDataReader:
         model_path: Path to the FP32 ONNX model (used to read input tensor name).
         saved_model_dir: SavedModel directory containing ``example_info.json``.
         num_samples: Number of synthetic calibration samples to generate.
+        seed: Random seed for reproducible calibration data. None for non-deterministic.
     """
 
-    def __init__(self, model_path, saved_model_dir, num_samples=200):
+    def __init__(self, model_path, saved_model_dir, num_samples=200, seed=42):
         """Initialize reader, resolve input name and shape from model artifacts."""
         import numpy as np
         import onnxruntime as ort
@@ -66,6 +77,7 @@ class SyntheticCalibrationDataReader:
         self._input_shape = tuple(input_shape)
         self._num_samples = num_samples
         self._index = 0
+        self._rng = np.random.RandomState(seed)
 
         print(f'Synthetic calibration: {num_samples} samples, '
               f'shape {list(input_shape)}, input name: {self._input_name}')
@@ -81,7 +93,7 @@ class SyntheticCalibrationDataReader:
             return None
         self._index += 1
         # Reason: uniform [-1, 1] matches DeepVariant preprocess_images range
-        img = self._np.random.uniform(
+        img = self._rng.uniform(
             -1, 1, (1,) + self._input_shape).astype(self._np.float32)
         return {self._input_name: img}
 
@@ -110,8 +122,12 @@ def main():
                              'Do NOT use minmax for InceptionV3.')
     parser.add_argument('--percentile_value', type=float, default=99.99,
                         help='Percentile for clipping (default: 99.99)')
+    parser.add_argument('--seed', type=int, default=42,
+                        help='Random seed for reproducible calibration '
+                             '(default: 42)')
     args = parser.parse_args()
 
+    _check_ort_version()
     from onnxruntime.quantization import CalibrationMethod, QuantType
     from onnxruntime.quantization import quantize_static as ort_quantize_static
 
@@ -127,7 +143,8 @@ def main():
         print('WARNING: MinMax calibration is NOT recommended for InceptionV3.')
 
     reader = SyntheticCalibrationDataReader(
-        args.input, args.saved_model_dir, args.num_calibration_samples)
+        args.input, args.saved_model_dir, args.num_calibration_samples,
+        args.seed)
 
     print(f'Static INT8 quantization: {args.input} -> {args.output}')
     print(f'  Calibration method: {args.calibration_method}')

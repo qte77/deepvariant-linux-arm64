@@ -17,8 +17,6 @@
 ARG BUILDER_IMAGE=ghcr.io/qte77/deepvariant-linux-arm64:base-builder-v1.9.0
 ARG FROM_IMAGE=arm64v8/ubuntu:24.04
 ARG VERSION=1.9.0
-# Optional: URL to pre-quantized INT8 WGS model. Empty = skip download.
-ARG INT8_MODEL_URL=""
 
 # --- Stage 1: pre-built Bazel binaries ---------------------------------------
 FROM ${BUILDER_IMAGE} AS builder
@@ -94,21 +92,14 @@ RUN python3 -m tf2onnx.convert --saved-model /opt/models/wgs --output /opt/model
     python3 -m tf2onnx.convert --saved-model /opt/models/wes --output /opt/models/wes/model.onnx --opset 17 && \
     python3 -m tf2onnx.convert --saved-model /opt/models/pacbio --output /opt/models/pacbio/model.onnx --opset 17
 
-# Ensure quantization deps are available (packaging needed for ORT version check)
+# INT8 quantization: dynamic (weights-only) + static (synthetic Percentile calibration)
 RUN uv pip install --python /opt/venv/bin/python --no-cache packaging
-
-# Dynamic INT8: weights-only quantization, no calibration needed (~21 MB vs 84 MB FP32)
 COPY scripts/quantize_model_onnx.py /opt/scripts/quantize_model_onnx.py
+COPY scripts/synthetic_calibration.py /opt/scripts/synthetic_calibration.py
 RUN for model in wgs wes pacbio; do \
       python3 /opt/scripts/quantize_model_onnx.py \
         --input /opt/models/${model}/model.onnx \
-        --output /opt/models/${model}/model_int8_dynamic.onnx; \
-    done
-
-# Static INT8: weights + activations, synthetic calibration (Percentile method)
-COPY scripts/quantize_static_onnx.py /opt/scripts/quantize_static_onnx.py
-COPY scripts/synthetic_calibration.py /opt/scripts/synthetic_calibration.py
-RUN for model in wgs wes pacbio; do \
+        --output /opt/models/${model}/model_int8_dynamic.onnx && \
       python3 /opt/scripts/synthetic_calibration.py \
         --input /opt/models/${model}/model.onnx \
         --output /opt/models/${model}/model_int8_static.onnx \
@@ -116,12 +107,6 @@ RUN for model in wgs wes pacbio; do \
         --num_calibration_samples 200 \
         --calibration_method percentile; \
     done
-
-# Optional: pre-quantized INT8 WGS model from external URL (overrides build-generated)
-ARG INT8_MODEL_URL
-RUN if [ -n "${INT8_MODEL_URL}" ]; then \
-      wget -q -O /opt/models/wgs/model_int8_external.onnx "${INT8_MODEL_URL}"; \
-    fi
 
 # --- Stage 3: runtime --------------------------------------------------------
 FROM ${FROM_IMAGE}

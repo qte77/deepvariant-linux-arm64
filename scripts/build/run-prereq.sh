@@ -66,7 +66,7 @@ fi
 
 note_build_stage "Update package list"
 
-$SUDO -H apt-get update "${APT_ARGS[@]}" > /dev/null
+$SUDO_H apt-get update "${APT_ARGS[@]}" > /dev/null
 
 note_build_stage "run-prereq.sh: Install development packages"
 
@@ -74,13 +74,13 @@ note_build_stage "run-prereq.sh: Install development packages"
 wait_for_dpkg_lock
 
 # See https://askubuntu.com/questions/909277.
-$SUDO -H DEBIAN_FRONTEND=noninteractive apt-get install "${APT_ARGS[@]}" pkg-config zip zlib1g-dev unzip curl git wget > /dev/null
+$SUDO_H DEBIAN_FRONTEND=noninteractive apt-get install "${APT_ARGS[@]}" pkg-config zip zlib1g-dev unzip curl git wget > /dev/null
 
 note_build_stage "Install python3 packaging infrastructure"
 
 # Fix this error:
 # "error: command 'x86_64-linux-gnu-gcc' failed: No such file or directory"
-$SUDO -H apt-get install "${APT_ARGS[@]}" "gcc"
+$SUDO_H apt-get install "${APT_ARGS[@]}" "gcc"
 
 # uv is installed via COPY --from in Dockerfiles; verify it's available
 if ! command -v uv &>/dev/null; then
@@ -216,9 +216,9 @@ if [[ "${DV_GPU_BUILD}" = "1" ]]; then
       echo \
         "deb [signed-by=/usr/share/keyrings/nvidia-cuda-archive-keyring.gpg] https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2204/x86_64/ /" | \
         $SUDO tee /etc/apt/sources.list.d/cuda.list > /dev/null
-      $SUDO -H NEEDRESTART_MODE=a apt-get update "${APT_ARGS[@]}"
-      $SUDO -H DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=a apt-get full-upgrade "${APT_ARGS[@]}"
-      $SUDO -H DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=a apt-get install "${APT_ARGS[@]}" cuda-11-8
+      $SUDO_H NEEDRESTART_MODE=a apt-get update "${APT_ARGS[@]}"
+      $SUDO_H DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=a apt-get full-upgrade "${APT_ARGS[@]}"
+      $SUDO_H DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=a apt-get install "${APT_ARGS[@]}" cuda-11-8
     fi
     echo "Checking for CUDNN..."
     if [[ ! -e /usr/local/cuda-11/include/cudnn.h ]]; then
@@ -232,7 +232,7 @@ if [[ "${DV_GPU_BUILD}" = "1" ]]; then
       $SUDO ldconfig
     fi
     # Tensorflow says to do this.
-    $SUDO -H NEEDRESTART_MODE=a apt-get install "${APT_ARGS[@]}" libcupti-dev > /dev/null
+    $SUDO_H NEEDRESTART_MODE=a apt-get install "${APT_ARGS[@]}" libcupti-dev > /dev/null
   fi
 
   # If we are doing a gpu-build, nvidia-smi should be install. Run it so we
@@ -275,10 +275,10 @@ fi
 note_build_stage "Install other packages"
 
 # for htslib
-$SUDO -H NEEDRESTART_MODE=a apt-get install "${APT_ARGS[@]}" libssl-dev libcurl4-openssl-dev liblz-dev libbz2-dev liblzma-dev > /dev/null
+$SUDO_H NEEDRESTART_MODE=a apt-get install "${APT_ARGS[@]}" libssl-dev libcurl4-openssl-dev liblz-dev libbz2-dev liblzma-dev > /dev/null
 
 # for the debruijn graph
-$SUDO -H NEEDRESTART_MODE=a apt-get install "${APT_ARGS[@]}" libboost-graph-dev > /dev/null
+$SUDO_H NEEDRESTART_MODE=a apt-get install "${APT_ARGS[@]}" libboost-graph-dev > /dev/null
 
 # Just being safe, downgrade load-bearing dependencies at the end if needed.
 uv pip install "${UV_ARGS[@]}" 'protobuf==4.21.9'

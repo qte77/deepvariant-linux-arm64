@@ -106,11 +106,14 @@ export USE_DEFAULT_PYTHON_LIB_PATH=1
 # upgraded again.
 export DV_COPT_FLAGS="--copt=-march=corei7 --copt=-Wno-sign-compare --copt=-Wno-write-strings --experimental_build_setting_api --java_runtime_version=remotejdk_11"
 
-# Reason: Docker runs as root — sudo is a no-op that drops env vars (VIRTUAL_ENV, PATH)
+# Reason: Docker runs as root — sudo is a no-op that drops env vars (VIRTUAL_ENV, PATH).
+# SUDO_H absorbs the `-H` flag (sets HOME) used with apt-get calls.
 if [[ "${EUID:-$(id -u)}" -eq 0 ]]; then
   SUDO=""
+  SUDO_H=""
 else
   SUDO="sudo"
+  SUDO_H="sudo -H"
 fi
 
 function note_build_stage {

@@ -28,15 +28,15 @@ note_build_stage "Install the runtime packages"
 
 note_build_stage "Update package list"
 
-$SUDO -H apt-get -qq -y update
+$SUDO_H apt-get -qq -y update
 
 note_build_stage "build-prereq-arm64.sh: Install development packages"
 
 wait_for_dpkg_lock
-$SUDO -H NEEDRESTART_MODE=a apt-get -qq -y install pkg-config zip g++ zlib1g-dev unzip curl git wget > /dev/null
+$SUDO_H NEEDRESTART_MODE=a apt-get -qq -y install pkg-config zip g++ zlib1g-dev unzip curl git wget > /dev/null
 
 # ARM64-specific: install Boost from system packages (not Homebrew)
-$SUDO -H apt-get -qq -y install libboost-dev libboost-graph-dev libboost-system-dev libboost-filesystem-dev libboost-math-dev > /dev/null
+$SUDO_H apt-get -qq -y install libboost-dev libboost-graph-dev libboost-system-dev libboost-filesystem-dev libboost-math-dev > /dev/null
 
 ################################################################################
 # bazel

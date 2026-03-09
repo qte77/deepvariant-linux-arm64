@@ -45,13 +45,13 @@ note_build_stage "Install the runtime packages"
 
 note_build_stage "Update package list"
 
-$SUDO -H apt-get -qq -y update
+$SUDO_H apt-get -qq -y update
 
 note_build_stage "build-prereq.sh: Install development packages"
 
 # Need to wait for dpkg lock (see internal)
 wait_for_dpkg_lock
-$SUDO -H NEEDRESTART_MODE=a apt-get -qq -y install pkg-config zip g++ zlib1g-dev unzip curl git wget > /dev/null
+$SUDO_H NEEDRESTART_MODE=a apt-get -qq -y install pkg-config zip g++ zlib1g-dev unzip curl git wget > /dev/null
 
 
 ################################################################################

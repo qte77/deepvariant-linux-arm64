@@ -136,7 +136,19 @@ RUN uv venv /opt/venv --python 3.10 && \
 ENV VIRTUAL_ENV=/opt/venv
 ENV PATH="/opt/venv/bin:$PATH"
 
-# Reason: single uv layer — prereqs, ABI fix, ONNX runtime
+# Runtime Python deps installed by:
+#   1. run-prereq.sh — upstream Google prereqs (~30 pkgs including etils,
+#      protobuf, pysam, jax, tf-models-official, etc.)
+#   2. This RUN layer — ARM64-specific fixes + additions:
+#      - cryptography/cffi: force-reinstall for ARM64 ABI compatibility
+#      - httplib2: pinned below 0.22 for compatibility
+#      - absl-py: pinned for DeepVariant runtime
+#      - onnxruntime: ARM64 ONNX inference engine (not in upstream prereqs)
+#      - etils: re-listed because uv's resolver drops it during the
+#        --reinstall-package pass (run-prereq.sh:101 installs it, but the
+#        resolver recalculation here clobbers it — confirmed by CI failure:
+#        "ModuleNotFoundError: No module named 'etils'" in make_examples.py)
+# Avoid duplicating other run-prereq.sh deps here unless similarly clobbered.
 COPY --from=builder /opt/deepvariant/scripts/build/run-prereq.sh /opt/deepvariant/bin/
 COPY --from=builder /opt/deepvariant/scripts/build/settings.sh /opt/deepvariant/bin/
 COPY --from=builder /opt/deepvariant/scripts/build/settings_arm64.sh /opt/deepvariant/bin/

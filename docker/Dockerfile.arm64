@@ -144,7 +144,7 @@ WORKDIR /opt/deepvariant/bin
 RUN ./run-prereq.sh && \
     uv pip install --no-cache \
         --reinstall-package cryptography --reinstall-package cffi \
-        cryptography cffi "httplib2<0.22" absl-py==0.13.0 onnxruntime
+        cryptography cffi "httplib2<0.22" absl-py==0.13.0 onnxruntime etils
 
 # Copy Bazel binaries from builder (single COPY for all zips)
 COPY --from=builder /opt/deepvariant/bazel-bin/licenses.zip /opt/

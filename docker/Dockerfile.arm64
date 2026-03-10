@@ -135,6 +135,9 @@ RUN uv venv /opt/venv --python 3.10 && \
     ln -sf /opt/venv/bin/python3 /usr/bin/python
 ENV VIRTUAL_ENV=/opt/venv
 ENV PATH="/opt/venv/bin:$PATH"
+# Reason: Bazel zip bootstrappers may strip sys.path to runfiles only.
+# PYTHONPATH ensures venv site-packages (etils, onnxruntime, etc.) are visible.
+ENV PYTHONPATH="/opt/venv/lib/python3.10/site-packages"
 
 # Runtime Python deps installed by:
 #   1. run-prereq.sh — upstream Google prereqs (~30 pkgs including etils,

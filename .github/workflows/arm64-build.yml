@@ -36,6 +36,12 @@ on:
         type: choice
         options:
           - 'ubuntu-24.04-arm'
+          - 'ubuntu-24.04-arm-2'
+          - 'ubuntu-24.04-arm-4'
+          - 'ubuntu-24.04-arm-8'
+          - 'ubuntu-24.04-arm-16'
+          - 'ubuntu-24.04-arm-32'
+          - 'ubuntu-24.04-arm-64'
 
 env:
   DOCKER_IMAGE: deepvariant-arm64

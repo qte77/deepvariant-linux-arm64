@@ -235,6 +235,7 @@ jobs:
               --ref="/data/GRCh38_no_alt_analysis_set.fasta" \
               --reads="/data/HG003.novaseq.pcr-free.35x.dedup.grch38_no_alt.chr20.bam" \
               --regions="${CALIBRATION_REGION}" \
+              --channel_list="read_base,base_quality,mapping_quality,strand,read_supports_variant,base_differs_from_ref" \
               --examples="/output/calibration.tfrecord@${NUM_SHARDS}.gz"
 
           echo "Generated TFRecords:"

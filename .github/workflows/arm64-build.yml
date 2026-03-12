@@ -191,7 +191,7 @@ jobs:
     timeout-minutes: 30
     permissions:
       contents: read
-      packages: read
+      packages: write
     env:
       DATA_DIR: /tmp/calibration-data
       OUTPUT_DIR: /tmp/int8-output
@@ -216,11 +216,24 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      - name: Check if INT8 model already exists in GHCR
+        id: int8-check
+        run: |
+          INT8_TAG="int8-wgs-${{ steps.version.outputs.tag }}"
+          if docker manifest inspect "${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${INT8_TAG}" > /dev/null 2>&1; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+            echo "::notice::INT8 model already exists in GHCR (tag: ${INT8_TAG}), skipping quantization."
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Pull runtime image
+        if: steps.int8-check.outputs.exists != 'true'
         run: |
           docker pull "${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${IMAGE_TAG}"
 
       - name: Download calibration data (reference + BAM)
+        if: steps.int8-check.outputs.exists != 'true'
         run: |
           mkdir -p "${DATA_DIR}" "${OUTPUT_DIR}"
           NCBI_REF_DIR="https://ftp.ncbi.nlm.nih.gov/genomes/all/GCA/000/001/405/GCA_000001405.15_GRCh38/seqs_for_alignment_pipelines.ucsc_ids"
@@ -239,6 +252,7 @@ jobs:
           curl -sS -o "${DATA_DIR}/${BAM}.bai" "${GCS_DIR}/${BAM}.bai"
 
       - name: Generate calibration TFRecords (make_examples)
+        if: steps.int8-check.outputs.exists != 'true'
         run: |
           IMAGE="${REGISTRY}/${IMAGE_NAME}:${IMAGE_TAG}"
           echo "Running make_examples on ${CALIBRATION_REGION} (${NUM_SHARDS} shards)..."
@@ -258,6 +272,7 @@ jobs:
           ls -lh "${OUTPUT_DIR}"/calibration.tfrecord-*
 
       - name: Run static INT8 quantization (WGS, Percentile)
+        if: steps.int8-check.outputs.exists != 'true'
         run: |
           IMAGE="${REGISTRY}/${IMAGE_NAME}:${IMAGE_TAG}"
           echo "Quantizing WGS model (${NUM_CALIBRATION_SAMPLES} samples, Percentile)..."
@@ -280,7 +295,20 @@ jobs:
           # model-specific BAM data or cross-domain accuracy validation.
           # For now, only WGS is quantized in CI.
 
+      - name: Push INT8 model to GHCR
+        if: steps.int8-check.outputs.exists != 'true'
+        run: |
+          INT8_TAG="int8-wgs-${{ steps.version.outputs.tag }}"
+          # Package the INT8 model as a single-layer OCI image for persistent storage
+          cd /tmp/int8-output
+          echo "FROM scratch" > Dockerfile.int8
+          echo "COPY model_int8_static_wgs.onnx /model_int8_static_wgs.onnx" >> Dockerfile.int8
+          docker build -f Dockerfile.int8 -t "${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${INT8_TAG}" .
+          docker push "${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${INT8_TAG}"
+          echo "::notice::Pushed INT8 model to GHCR (tag: ${INT8_TAG})"
+
       - name: Upload INT8 model artifact
+        if: steps.int8-check.outputs.exists != 'true'
         uses: actions/upload-artifact@v4
         with:
           name: int8-models-${{ steps.version.outputs.tag }}

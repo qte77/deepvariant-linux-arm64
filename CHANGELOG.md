@@ -5,6 +5,15 @@ Upstream compatibility: google/deepvariant v1.9.0
 
 ## [Unreleased]
 
+### Added
+- Snyk container and IaC security scanning CI job (optional, requires `SNYK_TOKEN` secret)
+- `docs/research/bitnet-viability.md`: BitNet viability assessment (not viable for CNN architecture)
+
+### Changed
+- Pinned uv from floating `0.10` to exact `0.10.9` in all Dockerfiles for reproducibility
+- Purge build-only apt packages (gcc, cpp, *-dev, pkg-config, git, unzip, curl) from runtime image
+- Expanded `.dockerignore` to exclude `tests/`, cache dirs, and egg-info
+
 ## [v1.9.0-arm64.7] — 2026-03-09
 
 ### Fixed

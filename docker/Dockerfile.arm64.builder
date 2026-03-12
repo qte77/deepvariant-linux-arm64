@@ -25,7 +25,7 @@ ARG DV_GPU_BUILD
 ARG PYTHON_VERSION
 ENV DV_GPU_BUILD=${DV_GPU_BUILD}
 ENV DV_BIN_PATH=/opt/deepvariant/bin
-COPY --from=ghcr.io/astral-sh/uv:0.10 /uv /usr/local/bin/uv
+COPY --from=ghcr.io/astral-sh/uv:0.10.9 /uv /usr/local/bin/uv
 
 # Reason: uv manages Python 3.10 — no deadsnakes PPA needed
 # Symlink to /usr/bin/python3 so Bazel and build scripts work unchanged

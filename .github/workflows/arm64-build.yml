@@ -270,6 +270,69 @@ jobs:
           name: int8-models-${{ steps.version.outputs.tag }}
           path: /tmp/int8-output/model_int8_static_wgs.onnx
 
+  # Snyk container and IaC security scanning.
+  # Skipped entirely when SNYK_TOKEN secret is not configured.
+  # continue-on-error: true so findings don't block builds initially.
+  security-scan:
+    name: Snyk Container & IaC Scan
+    needs: build-arm64
+    if: always() && needs.build-arm64.result == 'success' && secrets.SNYK_TOKEN != ''
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      packages: read
+      security-events: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Snyk container scan
+        uses: snyk/actions/docker@master
+        env:
+          SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
+        with:
+          image: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ github.sha }}
+          args: --severity-threshold=high --sarif-file-output=snyk-container.sarif
+        continue-on-error: true
+
+      - name: Snyk IaC scan (Dockerfiles)
+        uses: snyk/actions/iac@master
+        env:
+          SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
+        with:
+          args: --severity-threshold=high --sarif-file-output=snyk-iac.sarif docker/
+        continue-on-error: true
+
+      - name: Upload container SARIF to GitHub Security
+        uses: github/codeql-action/upload-sarif@v4
+        with:
+          sarif_file: snyk-container.sarif
+        if: always() && hashFiles('snyk-container.sarif') != ''
+
+      - name: Upload IaC SARIF to GitHub Security
+        uses: github/codeql-action/upload-sarif@v4
+        with:
+          sarif_file: snyk-iac.sarif
+          category: snyk-iac
+        if: always() && hashFiles('snyk-iac.sarif') != ''
+
+      - name: Snyk monitor (track in dashboard)
+        if: github.ref == 'refs/heads/main'
+        uses: snyk/actions/docker@master
+        env:
+          SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
+        with:
+          command: monitor
+          image: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ github.sha }}
+        continue-on-error: true
+
   test-accuracy:
     name: Accuracy Validation (chr20)
     needs: build-arm64

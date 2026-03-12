@@ -152,7 +152,7 @@ WORKDIR /opt/deepvariant/bin
 RUN ./run-prereq.sh && \
     uv pip install --no-cache \
         --reinstall-package cryptography --reinstall-package cffi \
-        cryptography cffi "httplib2<0.22" absl-py==0.13.0 onnxruntime && \
+        cryptography cffi "httplib2<0.22" absl-py==0.13.0 onnxruntime onnx && \
     uv pip install --no-cache etils && \
     python3 -c "import etils, onnxruntime; print(f'OK: etils {etils.__version__}, ort {onnxruntime.__version__}')"
 

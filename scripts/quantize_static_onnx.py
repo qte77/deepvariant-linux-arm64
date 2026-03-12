@@ -85,6 +85,7 @@ class DeepVariantCalibrationDataReader:
         patterns = [
             os.path.join(tfrecord_dir,
                          'examples.tfrecord-?????-of-?????.gz'),
+            os.path.join(tfrecord_dir, '*.tfrecord-?????-of-?????.gz'),
             os.path.join(tfrecord_dir, '*.tfrecord.gz'),
             os.path.join(tfrecord_dir, '*.tfrecord-?????-of-?????'),
         ]

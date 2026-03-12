@@ -125,15 +125,19 @@ jobs:
             exit 1
           fi
 
-      - name: Check if SHA image already exists in GHCR
+      - name: Check if image already exists in GHCR
         id: image-check
         run: |
-          if docker manifest inspect "${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ github.sha }}" > /dev/null 2>&1; then
-            echo "exists=true" >> "$GITHUB_OUTPUT"
-            echo "::notice::Image for ${{ github.sha }} already exists in GHCR, skipping build."
-          else
-            echo "exists=false" >> "$GITHUB_OUTPUT"
-          fi
+          # Check both SHA tag and version tag — PR events use a merge commit SHA
+          # that differs from the branch HEAD SHA used by push/dispatch events.
+          for tag in "${{ github.sha }}" "${{ steps.version.outputs.tag }}"; do
+            if docker manifest inspect "${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${tag}" > /dev/null 2>&1; then
+              echo "exists=true" >> "$GITHUB_OUTPUT"
+              echo "::notice::Image already exists in GHCR (tag: ${tag}), skipping build."
+              exit 0
+            fi
+          done
+          echo "exists=false" >> "$GITHUB_OUTPUT"
 
       - name: Docker meta (tags for main and PR branches)
         if: steps.image-check.outputs.exists != 'true'
@@ -352,7 +356,7 @@ jobs:
     name: Accuracy Validation (chr20)
     needs: build-arm64
     runs-on: ubuntu-24.04-arm
-    if: github.event_name != 'pull_request'
+    if: always() && needs.build-arm64.result == 'success' && github.event_name != 'pull_request'
     timeout-minutes: 120
     steps:
       - uses: actions/checkout@v4

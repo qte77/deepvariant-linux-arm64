@@ -161,8 +161,9 @@ RUN ./run-prereq.sh && \
 # *-dev: headers only — shared libs (libz.so, libssl.so, etc.) remain as deps.
 # pkg-config/git/unzip/curl: build tooling only.
 # Verify after changes: docker run ... python3 -c "import onnxruntime, pysam, etils"
+# Reason: unzip kept — Bazel zip wrappers need it to extract runfiles at runtime.
 RUN apt-get purge -y --auto-remove \
-        gcc cpp pkg-config git unzip curl \
+        gcc cpp pkg-config git curl \
         zlib1g-dev libssl-dev libcurl4-openssl-dev \
         liblz-dev libbz2-dev liblzma-dev libboost-graph-dev && \
     apt-get clean && rm -rf /var/lib/apt/lists/*

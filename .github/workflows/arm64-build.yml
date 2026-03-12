@@ -273,11 +273,12 @@ jobs:
   # Snyk container and IaC security scanning.
   # Steps are skipped when SNYK_TOKEN secret is not configured.
   # continue-on-error: true so findings don't block builds initially.
+  # Reason: snyk/snyk:docker image is x86-only (no ARM64 manifest).
   security-scan:
     name: Snyk Container & IaC Scan
     needs: build-arm64
     if: always() && needs.build-arm64.result == 'success'
-    runs-on: ubuntu-24.04-arm
+    runs-on: ubuntu-latest
     timeout-minutes: 15
     permissions:
       contents: read

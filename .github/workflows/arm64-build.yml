@@ -303,7 +303,7 @@ jobs:
           SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
         with:
           image: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ github.sha }}
-          args: --severity-threshold=high --sarif-file-output=snyk-container.sarif
+          args: --platform=linux/arm64 --severity-threshold=high --sarif-file-output=snyk-container.sarif
         continue-on-error: true
 
       - name: Snyk IaC scan (Dockerfiles)
@@ -336,6 +336,7 @@ jobs:
         with:
           command: monitor
           image: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ github.sha }}
+          args: --platform=linux/arm64
         continue-on-error: true
 
   test-accuracy:

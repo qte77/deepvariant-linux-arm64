@@ -28,20 +28,11 @@ on:
           - 'true'
       quantize_runner:
         description: >-
-          ARM64 runner for INT8 quantization. Default: ubuntu-24.04-arm (free, 4 vCPU).
-          Larger runners require runner groups (Team/Enterprise plans).
-          Pricing: https://docs.github.com/en/billing/reference/actions-runner-pricing
+          ARM64 runner label for INT8 quantization. Default: ubuntu-24.04-arm (4 vCPU).
+          Larger ARM64 runners (8-64 vCPU) require creating custom runners in repo settings.
         required: false
         default: 'ubuntu-24.04-arm'
-        type: choice
-        options:
-          - 'ubuntu-24.04-arm'
-          - 'ubuntu-24.04-arm-2'
-          - 'ubuntu-24.04-arm-4'
-          - 'ubuntu-24.04-arm-8'
-          - 'ubuntu-24.04-arm-16'
-          - 'ubuntu-24.04-arm-32'
-          - 'ubuntu-24.04-arm-64'
+        type: string
 
 env:
   DOCKER_IMAGE: deepvariant-arm64
@@ -134,7 +125,18 @@ jobs:
             exit 1
           fi
 
+      - name: Check if SHA image already exists in GHCR
+        id: image-check
+        run: |
+          if docker manifest inspect "${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ github.sha }}" > /dev/null 2>&1; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+            echo "::notice::Image for ${{ github.sha }} already exists in GHCR, skipping build."
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Docker meta (tags for main and PR branches)
+        if: steps.image-check.outputs.exists != 'true'
         id: meta
         uses: docker/metadata-action@v5
         with:
@@ -146,6 +148,7 @@ jobs:
             type=ref,event=pr
 
       - name: Build and push ARM64 Docker image
+        if: steps.image-check.outputs.exists != 'true'
         uses: docker/build-push-action@v5
         with:
           context: .

@@ -97,6 +97,8 @@ jobs:
     permissions:
       contents: read
       packages: write
+    outputs:
+      image_tag: ${{ steps.image-check.outputs.image_tag }}
     steps:
       - uses: actions/checkout@v4
 
@@ -133,11 +135,13 @@ jobs:
           for tag in "${{ github.sha }}" "${{ steps.version.outputs.tag }}"; do
             if docker manifest inspect "${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${tag}" > /dev/null 2>&1; then
               echo "exists=true" >> "$GITHUB_OUTPUT"
+              echo "image_tag=${tag}" >> "$GITHUB_OUTPUT"
               echo "::notice::Image already exists in GHCR (tag: ${tag}), skipping build."
               exit 0
             fi
           done
           echo "exists=false" >> "$GITHUB_OUTPUT"
+          echo "image_tag=${{ github.sha }}" >> "$GITHUB_OUTPUT"
 
       - name: Docker meta (tags for main and PR branches)
         if: steps.image-check.outputs.exists != 'true'
@@ -192,7 +196,7 @@ jobs:
     env:
       DATA_DIR: /tmp/calibration-data
       OUTPUT_DIR: /tmp/int8-output
-      IMAGE_TAG: ${{ github.sha }}
+      IMAGE_TAG: ${{ needs.build-arm64.outputs.image_tag }}
       # Reason: 5MB region yields ~2300 examples — well above the 500 needed
       CALIBRATION_REGION: "chr20:10000000-15000000"
       NUM_SHARDS: "4"
@@ -315,7 +319,7 @@ jobs:
         env:
           SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
         with:
-          image: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ github.sha }}
+          image: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ needs.build-arm64.outputs.image_tag }}
           args: --platform=linux/arm64 --severity-threshold=high --sarif-file-output=snyk-container.sarif
         continue-on-error: true
 
@@ -348,7 +352,7 @@ jobs:
           SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
         with:
           command: monitor
-          image: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ github.sha }}
+          image: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ needs.build-arm64.outputs.image_tag }}
           args: --platform=linux/arm64
         continue-on-error: true
 
@@ -363,13 +367,13 @@ jobs:
 
       - name: Pull ARM64 Docker image
         run: |
-          docker pull ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ github.sha }}
+          docker pull ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ needs.build-arm64.outputs.image_tag }}
 
       - name: Run HG003 chr20 benchmark
         run: |
           bash scripts/benchmark_arm64.sh \
             --accuracy \
-            --docker-image "${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ github.sha }}"
+            --docker-image "${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ needs.build-arm64.outputs.image_tag }}"
 
       - name: Upload benchmark results
         uses: actions/upload-artifact@v4

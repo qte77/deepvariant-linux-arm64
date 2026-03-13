@@ -17,8 +17,6 @@
 ARG BUILDER_IMAGE=ghcr.io/qte77/deepvariant-linux-arm64:base-builder-v1.9.0
 ARG FROM_IMAGE=arm64v8/ubuntu:24.04
 ARG VERSION=1.9.0
-# Optional: URL to pre-quantized INT8 WGS model. Empty = skip download.
-ARG INT8_MODEL_URL=""
 
 # --- Stage 1: pre-built Bazel binaries ---------------------------------------
 FROM ${BUILDER_IMAGE} AS builder
@@ -31,12 +29,12 @@ RUN apt-get update -qq && \
     apt-get install -qq -y --no-install-recommends \
         wget ca-certificates && \
     apt-get clean && rm -rf /var/lib/apt/lists/*
-COPY --from=ghcr.io/astral-sh/uv:0.10 /uv /usr/local/bin/uv
+COPY --from=ghcr.io/astral-sh/uv:0.10.9 /uv /usr/local/bin/uv
 
 # Reason: uv manages Python 3.10 — no deadsnakes PPA needed in this stage
 # tensorflow explicitly required — tf2onnx needs it for SavedModel conversion
 RUN uv venv /opt/venv --python 3.10 && \
-    uv pip install --python /opt/venv/bin/python --no-cache tensorflow tf2onnx onnxruntime
+    uv pip install --python /opt/venv/bin/python --no-cache tensorflow tf2onnx onnxruntime packaging
 ENV PATH="/opt/venv/bin:$PATH"
 
 WORKDIR /opt
@@ -94,11 +92,20 @@ RUN python3 -m tf2onnx.convert --saved-model /opt/models/wgs --output /opt/model
     python3 -m tf2onnx.convert --saved-model /opt/models/wes --output /opt/models/wes/model.onnx --opset 17 && \
     python3 -m tf2onnx.convert --saved-model /opt/models/pacbio --output /opt/models/pacbio/model.onnx --opset 17
 
-# Optional: pre-quantized INT8 WGS model (SNP F1=0.9978, INDEL F1=0.9962, 21 MB vs 84 MB FP32)
-ARG INT8_MODEL_URL
-RUN if [ -n "${INT8_MODEL_URL}" ]; then \
-      wget -q -O /opt/models/wgs/model_int8_static.onnx "${INT8_MODEL_URL}"; \
-    fi
+# INT8 quantization: dynamic (weights-only) + static (synthetic Percentile calibration)
+COPY scripts/quantize_model_onnx.py /opt/scripts/quantize_model_onnx.py
+COPY scripts/synthetic_calibration.py /opt/scripts/synthetic_calibration.py
+RUN for model in wgs wes pacbio; do \
+      python3 /opt/scripts/quantize_model_onnx.py \
+        --input /opt/models/${model}/model.onnx \
+        --output /opt/models/${model}/model_int8_dynamic.onnx && \
+      python3 /opt/scripts/synthetic_calibration.py \
+        --input /opt/models/${model}/model.onnx \
+        --output /opt/models/${model}/model_int8_static.onnx \
+        --saved_model_dir /opt/models/${model} \
+        --num_calibration_samples 200 \
+        --calibration_method percentile; \
+    done
 
 # --- Stage 3: runtime --------------------------------------------------------
 FROM ${FROM_IMAGE}
@@ -106,7 +113,7 @@ LABEL org.opencontainers.image.source="https://github.com/qte77/deepvariant-linu
 ARG VERSION
 ENV VERSION=${VERSION}
 ENV PATH="$PATH:/opt/deepvariant/bin"
-COPY --from=ghcr.io/astral-sh/uv:0.10 /uv /usr/local/bin/uv
+COPY --from=ghcr.io/astral-sh/uv:0.10.9 /uv /usr/local/bin/uv
 
 # Reason: single apt-get layer — samtools/bcftools (variant calling),
 # parallel (multi-sample), libjemalloc2 (14-17% ME speedup), gcc (pysam build)
@@ -128,15 +135,38 @@ RUN uv venv /opt/venv --python 3.10 && \
 ENV VIRTUAL_ENV=/opt/venv
 ENV PATH="/opt/venv/bin:$PATH"
 
-# Reason: single uv layer — prereqs, ABI fix, ONNX runtime
+# Runtime Python deps installed by:
+#   1. run-prereq.sh — upstream Google prereqs (~30 pkgs including etils,
+#      protobuf, pysam, jax, tf-models-official, etc.)
+#   2. ARM64 fixes — cryptography/cffi ABI rebuild, httplib2 pin, absl-py pin
+#   3. ARM64 additions — onnxruntime (not in upstream prereqs)
+#   4. Post-install guard — etils reinstall (uv resolver drops it during the
+#      --reinstall-package pass; confirmed by CI: "No module named 'etils'")
+# Do NOT duplicate run-prereq.sh deps here unless similarly clobbered.
 COPY --from=builder /opt/deepvariant/scripts/build/run-prereq.sh /opt/deepvariant/bin/
 COPY --from=builder /opt/deepvariant/scripts/build/settings.sh /opt/deepvariant/bin/
 COPY --from=builder /opt/deepvariant/scripts/build/settings_arm64.sh /opt/deepvariant/bin/
 WORKDIR /opt/deepvariant/bin
+# Reason: single RUN layer — prereqs + ARM64 fixes + smoke test (minimises image layers)
+# etils installed separately AFTER the --reinstall-package pass to avoid resolver clobber
 RUN ./run-prereq.sh && \
     uv pip install --no-cache \
         --reinstall-package cryptography --reinstall-package cffi \
-        cryptography cffi "httplib2<0.22" absl-py==0.13.0 onnxruntime
+        cryptography cffi "httplib2<0.22" absl-py==0.13.0 onnxruntime onnx && \
+    uv pip install --no-cache etils && \
+    python3 -c "import etils, onnxruntime; print(f'OK: etils {etils.__version__}, ort {onnxruntime.__version__}')"
+
+# Purge build-only packages no longer needed at runtime.
+# gcc/cpp: pysam/cffi C extension compilation only.
+# *-dev: headers only — shared libs (libz.so, libssl.so, etc.) remain as deps.
+# pkg-config/git/unzip/curl: build tooling only.
+# Verify after changes: docker run ... python3 -c "import onnxruntime, pysam, etils"
+# Reason: unzip kept — Bazel zip wrappers need it to extract runfiles at runtime.
+RUN apt-get purge -y --auto-remove \
+        gcc cpp pkg-config git curl \
+        zlib1g-dev libssl-dev libcurl4-openssl-dev \
+        liblz-dev libbz2-dev liblzma-dev libboost-graph-dev && \
+    apt-get clean && rm -rf /var/lib/apt/lists/*
 
 # Copy Bazel binaries from builder (single COPY for all zips)
 COPY --from=builder /opt/deepvariant/bazel-bin/licenses.zip /opt/
@@ -168,7 +198,9 @@ RUN for name in make_examples call_variants postprocess_variants vcf_stats_repor
   printf '#!/bin/bash\n/usr/bin/python3 -u /opt/deepvariant/bin/run_deepvariant.py "$@"\n' > \
     /opt/deepvariant/bin/run_deepvariant && chmod +x /opt/deepvariant/bin/run_deepvariant && \
   printf '#!/bin/bash\n/usr/bin/python3 /opt/deepvariant/scripts/quantize_static_onnx.py "$@"\n' > \
-    /opt/deepvariant/bin/quantize_model && chmod +x /opt/deepvariant/bin/quantize_model
+    /opt/deepvariant/bin/quantize_model && chmod +x /opt/deepvariant/bin/quantize_model && \
+  printf '#!/bin/bash\n/usr/bin/python3 /opt/deepvariant/scripts/quantize_model_onnx.py "$@"\n' > \
+    /opt/deepvariant/bin/quantize_dynamic && chmod +x /opt/deepvariant/bin/quantize_dynamic
 
 # Copy models + ONNX conversions from models stage (single layer)
 COPY --from=models /opt/models /opt/models
@@ -179,6 +211,8 @@ COPY scripts/docker_entrypoint.sh /opt/deepvariant/bin/docker_entrypoint.sh
 COPY scripts/autoconfig.sh /opt/deepvariant/scripts/autoconfig.sh
 COPY scripts/run_parallel_cv.sh /opt/deepvariant/scripts/run_parallel_cv.sh
 COPY scripts/quantize_static_onnx.py /opt/deepvariant/scripts/quantize_static_onnx.py
+COPY scripts/quantize_model_onnx.py /opt/deepvariant/scripts/quantize_model_onnx.py
+COPY scripts/synthetic_calibration.py /opt/deepvariant/scripts/synthetic_calibration.py
 COPY scripts/convert_model_onnx.py /opt/deepvariant/scripts/convert_model_onnx.py
 RUN chmod +x /opt/deepvariant/bin/docker_entrypoint.sh \
              /opt/deepvariant/scripts/autoconfig.sh \
@@ -190,6 +224,10 @@ WORKDIR /opt/deepvariant
 # docker_entrypoint.sh auto-detects BF16 and sets it appropriately:
 #   BF16 detected (Graviton3+): ON  — BFMMLA acceleration
 #   No BF16 (N1, AmpereOne):    OFF — avoids 29% ME overhead / SIGILL
+
+# Reason: Bazel zip bootstrappers may strip sys.path to runfiles only.
+# PYTHONPATH ensures venv site-packages (etils, onnxruntime, etc.) are visible.
+ENV PYTHONPATH="/opt/venv/lib/python3.10/site-packages"
 
 ENTRYPOINT ["/opt/deepvariant/bin/docker_entrypoint.sh"]
 CMD ["/opt/deepvariant/bin/run_deepvariant", "--help"]

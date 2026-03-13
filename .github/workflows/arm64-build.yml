@@ -3,7 +3,7 @@
 # Uses native ARM64 runners (no QEMU emulation needed).
 # Runtime build uses a pre-built builder image from ghcr.io (~10min).
 # Full from-source builder rebuild available via workflow_dispatch (~1-2hr native).
-# Pushes images to ghcr.io on both PRs (tagged pr-N) and main (tagged latest).
+# Pushes images to ghcr.io tagged by version and SHA (latest on main).
 
 name: ARM64 Build & Test
 
@@ -26,6 +26,13 @@ on:
         options:
           - 'false'
           - 'true'
+      quantize_runner:
+        description: >-
+          ARM64 runner label for INT8 quantization. Default: ubuntu-24.04-arm (4 vCPU).
+          Larger ARM64 runners (8-64 vCPU) require creating custom runners in repo settings.
+        required: false
+        default: 'ubuntu-24.04-arm'
+        type: string
 
 env:
   DOCKER_IMAGE: deepvariant-arm64
@@ -90,6 +97,9 @@ jobs:
     permissions:
       contents: read
       packages: write
+    outputs:
+      image_tag: ${{ steps.image-check.outputs.image_tag }}
+      image_changed: ${{ steps.image-check.outputs.exists != 'true' }}
     steps:
       - uses: actions/checkout@v4
 
@@ -118,7 +128,24 @@ jobs:
             exit 1
           fi
 
-      - name: Docker meta (tags for main and PR branches)
+      - name: Check if image already exists in GHCR
+        id: image-check
+        run: |
+          # Check both SHA tag and version tag — PR events use a merge commit SHA
+          # that differs from the branch HEAD SHA used by push/dispatch events.
+          for tag in "${{ github.sha }}" "${{ steps.version.outputs.tag }}"; do
+            if docker manifest inspect "${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${tag}" > /dev/null 2>&1; then
+              echo "exists=true" >> "$GITHUB_OUTPUT"
+              echo "image_tag=${tag}" >> "$GITHUB_OUTPUT"
+              echo "::notice::Image already exists in GHCR (tag: ${tag}), skipping build."
+              exit 0
+            fi
+          done
+          echo "exists=false" >> "$GITHUB_OUTPUT"
+          echo "image_tag=${{ github.sha }}" >> "$GITHUB_OUTPUT"
+
+      - name: Docker meta (tags)
+        if: steps.image-check.outputs.exists != 'true'
         id: meta
         uses: docker/metadata-action@v5
         with:
@@ -126,10 +153,10 @@ jobs:
           tags: |
             type=raw,value=latest,enable={{is_default_branch}}
             type=raw,value=${{ steps.version.outputs.tag }}
-            type=sha,prefix=
-            type=ref,event=pr
+            type=sha,prefix=,format=long
 
       - name: Build and push ARM64 Docker image
+        if: steps.image-check.outputs.exists != 'true'
         uses: docker/build-push-action@v5
         with:
           context: .
@@ -142,29 +169,377 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
-  test-accuracy:
-    name: Accuracy Validation (chr20)
+  # ---------------------------------------------------------------------------
+  # Branch: Security scanning
+  # build-arm64 → security-scan
+  # ---------------------------------------------------------------------------
+
+  # Snyk container and IaC security scanning.
+  # Steps are skipped when SNYK_TOKEN secret is not configured.
+  # continue-on-error: true so findings don't block builds initially.
+  # Reason: snyk/snyk:docker image is x86-only (no ARM64 manifest).
+  security-scan:
+    name: Snyk Container & IaC Scan
+    needs: build-arm64
+    if: always() && needs.build-arm64.result == 'success'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      packages: read
+      security-events: write
+    env:
+      HAS_SNYK_TOKEN: ${{ secrets.SNYK_TOKEN != '' }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Snyk container scan
+        if: env.HAS_SNYK_TOKEN == 'true'
+        uses: snyk/actions/docker@master
+        env:
+          SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
+        with:
+          image: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ needs.build-arm64.outputs.image_tag }}
+          args: --platform=linux/arm64 --severity-threshold=high --sarif-file-output=snyk-container.sarif
+        continue-on-error: true
+
+      - name: Snyk IaC scan (Dockerfiles)
+        if: env.HAS_SNYK_TOKEN == 'true'
+        uses: snyk/actions/iac@master
+        env:
+          SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
+        with:
+          args: --severity-threshold=high --sarif-file-output=snyk-iac.sarif docker/
+        continue-on-error: true
+
+      - name: Upload container SARIF to GitHub Security
+        uses: github/codeql-action/upload-sarif@v4
+        with:
+          sarif_file: snyk-container.sarif
+        if: always() && hashFiles('snyk-container.sarif') != ''
+
+      - name: Upload IaC SARIF to GitHub Security
+        uses: github/codeql-action/upload-sarif@v4
+        with:
+          sarif_file: snyk-iac.sarif
+          category: snyk-iac
+        if: always() && hashFiles('snyk-iac.sarif') != ''
+
+      - name: Snyk monitor (track in dashboard)
+        if: env.HAS_SNYK_TOKEN == 'true' && github.ref == 'refs/heads/main'
+        uses: snyk/actions/docker@master
+        env:
+          SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
+        with:
+          command: monitor
+          image: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ needs.build-arm64.outputs.image_tag }}
+          args: --platform=linux/arm64
+        continue-on-error: true
+
+  # ---------------------------------------------------------------------------
+  # Branch: FP32 accuracy validation
+  # build-arm64 → test-accuracy-fp32
+  # ---------------------------------------------------------------------------
+
+  test-accuracy-fp32:
+    name: Accuracy Validation FP32 (chr20)
     needs: build-arm64
     runs-on: ubuntu-24.04-arm
-    if: github.event_name != 'pull_request'
+    if: >-
+      always() && needs.build-arm64.result == 'success'
+      && github.event_name != 'pull_request'
+      && needs.build-arm64.outputs.image_changed == 'true'
     timeout-minutes: 120
     steps:
       - uses: actions/checkout@v4
 
       - name: Pull ARM64 Docker image
         run: |
-          docker pull ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ github.sha }}
+          docker pull ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ needs.build-arm64.outputs.image_tag }}
 
       - name: Run HG003 chr20 benchmark
         run: |
           bash scripts/benchmark_arm64.sh \
             --accuracy \
-            --docker-image "${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ github.sha }}"
+            --docker-image "${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ needs.build-arm64.outputs.image_tag }}"
 
       - name: Upload benchmark results
         uses: actions/upload-artifact@v4
         with:
-          name: benchmark-results
+          name: benchmark-results-fp32
           path: |
             ~/deepvariant-benchmark/output/benchmark_result.json
             ~/deepvariant-benchmark/output/happy_results/
+
+  # ---------------------------------------------------------------------------
+  # Branch: INT8 quantization + accuracy validation
+  # build-arm64 → quantize-int8 → test-accuracy-int8
+  # ---------------------------------------------------------------------------
+
+  # INT8 static quantization using real calibration data (WGS pileup images).
+  # Generates TFRecords via make_examples on a small chr20 region, then runs
+  # quantize_static_onnx.py with Percentile calibration (safe for InceptionV3).
+  # Reason: dynamic INT8 doesn't work on ARM64 — ConvInteger(10) ops unsupported
+  # by CPUExecutionProvider. Static INT8 with real data is the only viable path.
+  #
+  # Runner pricing (ARM64 Linux, as of 2026-01):
+  #   ubuntu-24.04-arm (4 vCPU, 16GB) — free for public repos, $0.005/min private
+  #   Larger runners require runner groups (Team/Enterprise plans):
+  #     4-core $0.008/min, 8-core $0.014/min, 16-core $0.026/min,
+  #     32-core $0.050/min, 64-core $0.098/min
+  # Sources:
+  #   https://docs.github.com/en/billing/reference/actions-runner-pricing
+  #   https://docs.github.com/en/actions/reference/runners/github-hosted-runners
+  #   https://github.com/orgs/community/discussions/148648
+  quantize-int8:
+    name: INT8 Static Quantization (WGS)
+    needs: build-arm64
+    runs-on: ${{ inputs.quantize_runner || 'ubuntu-24.04-arm' }}
+    if: always() && needs.build-arm64.result == 'success'
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      packages: write
+    outputs:
+      int8_changed: ${{ steps.int8-check.outputs.exists != 'true' }}
+    env:
+      DATA_DIR: /tmp/calibration-data
+      OUTPUT_DIR: /tmp/int8-output
+      IMAGE_TAG: ${{ needs.build-arm64.outputs.image_tag }}
+      # Reason: 5MB region yields ~2300 examples — well above the 500 needed
+      CALIBRATION_REGION: "chr20:10000000-15000000"
+      NUM_SHARDS: "4"
+      NUM_CALIBRATION_SAMPLES: "500"
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Read project version
+        id: version
+        run: |
+          version=$(grep '^current_version' .bumpversion.toml | sed 's/.*= *"//;s/"//')
+          echo "tag=v${version}" >> "$GITHUB_OUTPUT"
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - uses: oras-project/setup-oras@v1
+
+      - name: Check if INT8 model already exists in GHCR
+        id: int8-check
+        run: |
+          INT8_TAG="int8-wgs-${{ steps.version.outputs.tag }}"
+          if oras manifest fetch "${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${INT8_TAG}" > /dev/null 2>&1; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+            echo "::notice::INT8 model already exists in GHCR (tag: ${INT8_TAG}), skipping quantization."
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Pull runtime image
+        if: steps.int8-check.outputs.exists != 'true'
+        run: |
+          docker pull "${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${IMAGE_TAG}"
+
+      - name: Download calibration data (reference + BAM)
+        if: steps.int8-check.outputs.exists != 'true'
+        run: |
+          mkdir -p "${DATA_DIR}" "${OUTPUT_DIR}"
+          NCBI_REF_DIR="https://ftp.ncbi.nlm.nih.gov/genomes/all/GCA/000/001/405/GCA_000001405.15_GRCh38/seqs_for_alignment_pipelines.ucsc_ids"
+          GCS_DIR="https://storage.googleapis.com/deepvariant/case-study-testdata"
+          REF="GRCh38_no_alt_analysis_set.fasta"
+          BAM="HG003.novaseq.pcr-free.35x.dedup.grch38_no_alt.chr20.bam"
+
+          echo "Downloading reference FASTA (~900MB compressed)..."
+          curl -sS "${NCBI_REF_DIR}/GCA_000001405.15_GRCh38_no_alt_analysis_set.fna.gz" \
+            | gunzip > "${DATA_DIR}/${REF}"
+          curl -sS -o "${DATA_DIR}/${REF}.fai" \
+            "${NCBI_REF_DIR}/GCA_000001405.15_GRCh38_no_alt_analysis_set.fna.fai"
+
+          echo "Downloading BAM + index..."
+          curl -sS -o "${DATA_DIR}/${BAM}" "${GCS_DIR}/${BAM}"
+          curl -sS -o "${DATA_DIR}/${BAM}.bai" "${GCS_DIR}/${BAM}.bai"
+
+      - name: Generate calibration TFRecords (make_examples)
+        if: steps.int8-check.outputs.exists != 'true'
+        run: |
+          IMAGE="${REGISTRY}/${IMAGE_NAME}:${IMAGE_TAG}"
+          echo "Running make_examples on ${CALIBRATION_REGION} (${NUM_SHARDS} shards)..."
+          docker run --rm \
+            -v "${DATA_DIR}:/data" \
+            -v "${OUTPUT_DIR}:/output" \
+            "${IMAGE}" \
+            /opt/deepvariant/bin/make_examples \
+              --mode=calling \
+              --ref="/data/GRCh38_no_alt_analysis_set.fasta" \
+              --reads="/data/HG003.novaseq.pcr-free.35x.dedup.grch38_no_alt.chr20.bam" \
+              --regions="${CALIBRATION_REGION}" \
+              --channel_list="read_base,base_quality,mapping_quality,strand,read_supports_variant,base_differs_from_ref,insert_size" \
+              --examples="/output/calibration.tfrecord@${NUM_SHARDS}.gz"
+
+          echo "Generated TFRecords:"
+          ls -lh "${OUTPUT_DIR}"/calibration.tfrecord-*
+
+      - name: Run static INT8 quantization (WGS, Percentile)
+        if: steps.int8-check.outputs.exists != 'true'
+        run: |
+          IMAGE="${REGISTRY}/${IMAGE_NAME}:${IMAGE_TAG}"
+          echo "Quantizing WGS model (${NUM_CALIBRATION_SAMPLES} samples, Percentile)..."
+          docker run --rm \
+            -v "${OUTPUT_DIR}:/output" \
+            "${IMAGE}" \
+            python3 /opt/deepvariant/scripts/quantize_static_onnx.py \
+              --input /opt/models/wgs/model.onnx \
+              --output /output/model_int8_static_wgs.onnx \
+              --tfrecord_dir /output \
+              --saved_model_dir /opt/models/wgs \
+              --num_calibration_samples "${NUM_CALIBRATION_SAMPLES}" \
+              --calibration_method percentile
+
+          echo "INT8 model size:"
+          ls -lh "${OUTPUT_DIR}"/model_int8_static_wgs.onnx
+
+          # TODO: WES and PacBio calibration — WGS TFRecords may not be
+          # representative for WES/PacBio activation distributions. Needs
+          # model-specific BAM data or cross-domain accuracy validation.
+          # For now, only WGS is quantized in CI.
+
+      - name: Push INT8 model to GHCR
+        if: steps.int8-check.outputs.exists != 'true'
+        run: |
+          INT8_TAG="int8-wgs-${{ steps.version.outputs.tag }}"
+          echo "${{ secrets.GITHUB_TOKEN }}" | oras login "${{ env.REGISTRY }}" -u "${{ github.actor }}" --password-stdin
+          oras push "${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${INT8_TAG}" \
+            /tmp/int8-output/model_int8_static_wgs.onnx:application/vnd.onnx.model
+          echo "::notice::Pushed INT8 model to GHCR (tag: ${INT8_TAG})"
+
+      - name: Upload INT8 model artifact
+        if: steps.int8-check.outputs.exists != 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: int8-models-${{ steps.version.outputs.tag }}
+          path: /tmp/int8-output/model_int8_static_wgs.onnx
+
+  # INT8 accuracy validation using the quantized ONNX model.
+  # Volume-mounts the INT8 model over the FP32 model path inside the container
+  # so run_deepvariant uses the INT8 model without any script changes.
+  test-accuracy-int8:
+    name: Accuracy Validation INT8 (chr20)
+    needs: [build-arm64, quantize-int8]
+    runs-on: ubuntu-24.04-arm
+    if: >-
+      always() && needs.build-arm64.result == 'success'
+      && needs.quantize-int8.result == 'success'
+      && github.event_name != 'pull_request'
+      && needs.quantize-int8.outputs.int8_changed == 'true'
+    timeout-minutes: 120
+    env:
+      DATA_DIR: /tmp/benchmark-data
+      OUTPUT_DIR: /tmp/benchmark-output
+      INT8_MODEL_DIR: /tmp/int8-model
+      IMAGE_TAG: ${{ needs.build-arm64.outputs.image_tag }}
+      REF: GRCh38_no_alt_analysis_set.fasta
+      BAM: HG003.novaseq.pcr-free.35x.dedup.grch38_no_alt.chr20.bam
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: oras-project/setup-oras@v1
+
+      - name: Read project version
+        id: version
+        run: |
+          version=$(grep '^current_version' .bumpversion.toml | sed 's/.*= *"//;s/"//')
+          echo "tag=v${version}" >> "$GITHUB_OUTPUT"
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Pull runtime image
+        run: |
+          docker pull "${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${IMAGE_TAG}"
+
+      - name: Pull INT8 model from GHCR
+        run: |
+          mkdir -p "${INT8_MODEL_DIR}"
+          INT8_TAG="int8-wgs-${{ steps.version.outputs.tag }}"
+          cd "${INT8_MODEL_DIR}"
+          oras pull "${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${INT8_TAG}"
+          echo "INT8 model:"
+          ls -lh "${INT8_MODEL_DIR}/"
+
+      - name: Download calibration data (reference + BAM)
+        run: |
+          mkdir -p "${DATA_DIR}" "${OUTPUT_DIR}"
+          NCBI_REF_DIR="https://ftp.ncbi.nlm.nih.gov/genomes/all/GCA/000/001/405/GCA_000001405.15_GRCh38/seqs_for_alignment_pipelines.ucsc_ids"
+          GCS_DIR="https://storage.googleapis.com/deepvariant/case-study-testdata"
+
+          echo "Downloading reference FASTA (~900MB compressed)..."
+          curl -sS "${NCBI_REF_DIR}/GCA_000001405.15_GRCh38_no_alt_analysis_set.fna.gz" \
+            | gunzip > "${DATA_DIR}/${REF}"
+          curl -sS -o "${DATA_DIR}/${REF}.fai" \
+            "${NCBI_REF_DIR}/GCA_000001405.15_GRCh38_no_alt_analysis_set.fna.fai"
+
+          echo "Downloading BAM + index..."
+          curl -sS -o "${DATA_DIR}/${BAM}" "${GCS_DIR}/${BAM}"
+          curl -sS -o "${DATA_DIR}/${BAM}.bai" "${GCS_DIR}/${BAM}.bai"
+
+      - name: Download GIAB truth set (VCF + BED)
+        run: |
+          GIAB_DIR="https://ftp-trace.ncbi.nlm.nih.gov/giab/ftp/release/AshkenazimTrio/HG003_NA24149_father/NISTv4.2.1/GRCh38"
+          TRUTH_VCF="HG003_GRCh38_1_22_v4.2.1_benchmark.vcf.gz"
+          TRUTH_BED="HG003_GRCh38_1_22_v4.2.1_benchmark_noinconsistent.bed"
+          for FILE in "${TRUTH_VCF}" "${TRUTH_VCF}.tbi" "${TRUTH_BED}"; do
+            curl -sS -o "${DATA_DIR}/${FILE}" "${GIAB_DIR}/${FILE}"
+          done
+
+      - name: Run HG003 chr20 with INT8 model
+        run: |
+          IMAGE="${REGISTRY}/${IMAGE_NAME}:${IMAGE_TAG}"
+          INT8_ONNX="${INT8_MODEL_DIR}/model_int8_static_wgs.onnx"
+          docker run --rm \
+            -v "${DATA_DIR}:/data" \
+            -v "${OUTPUT_DIR}:/output" \
+            -v "${INT8_ONNX}:/opt/models/wgs/model.onnx" \
+            "${IMAGE}" \
+            /opt/deepvariant/bin/run_deepvariant \
+              --model_type=WGS \
+              --ref="/data/${REF}" \
+              --reads="/data/${BAM}" \
+              --output_vcf=/output/HG003_arm64_int8.vcf.gz \
+              --output_gvcf=/output/HG003_arm64_int8.g.vcf.gz \
+              --num_shards="$(nproc)" \
+              --regions=chr20 \
+              --intermediate_results_dir=/output/intermediate \
+              --use_onnx
+
+      - name: Validate INT8 accuracy (hap.py)
+        run: |
+          bash scripts/validate_accuracy.sh \
+            --vcf "${OUTPUT_DIR}/HG003_arm64_int8.vcf.gz" \
+            --truth-vcf "${DATA_DIR}/HG003_GRCh38_1_22_v4.2.1_benchmark.vcf.gz" \
+            --truth-bed "${DATA_DIR}/HG003_GRCh38_1_22_v4.2.1_benchmark_noinconsistent.bed" \
+            --ref "${DATA_DIR}/${REF}" \
+            --output-dir "${OUTPUT_DIR}/happy_results"
+
+      - name: Upload benchmark results
+        uses: actions/upload-artifact@v4
+        with:
+          name: benchmark-results-int8
+          path: |
+            /tmp/benchmark-output/HG003_arm64_int8.vcf.gz
+            /tmp/benchmark-output/HG003_arm64_int8.g.vcf.gz
+            /tmp/benchmark-output/happy_results/

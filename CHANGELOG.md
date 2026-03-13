@@ -7,12 +7,17 @@ Upstream compatibility: google/deepvariant v1.9.0
 
 ### Added
 - Snyk container and IaC security scanning CI job (optional, requires `SNYK_TOKEN` secret)
+- INT8 accuracy validation CI job — validates quantized model against GIAB HG003 chr20
+- INT8 model caching in GHCR via `oras` (skips redundant quantization on re-runs)
+- Build-skip for unchanged Docker images (checks GHCR before building)
 - `docs/research/bitnet-viability.md`: BitNet viability assessment (not viable for CNN architecture)
 
 ### Changed
 - Pinned uv from floating `0.10` to exact `0.10.9` in all Dockerfiles for reproducibility
 - Purge build-only apt packages (gcc, cpp, *-dev, pkg-config, git, curl) from runtime image
 - Expanded `.dockerignore` to exclude `tests/`, cache dirs, and egg-info
+- Renamed FP32 accuracy validation job to `Accuracy Validation FP32 (chr20)`
+- Accuracy validation jobs skip when image/model unchanged (dispatch re-runs)
 
 ## [v1.9.0-arm64.7] — 2026-03-09
 

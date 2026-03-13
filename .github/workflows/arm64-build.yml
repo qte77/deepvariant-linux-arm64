@@ -3,7 +3,7 @@
 # Uses native ARM64 runners (no QEMU emulation needed).
 # Runtime build uses a pre-built builder image from ghcr.io (~10min).
 # Full from-source builder rebuild available via workflow_dispatch (~1-2hr native).
-# Pushes images to ghcr.io on both PRs (tagged pr-N) and main (tagged latest).
+# Pushes images to ghcr.io tagged by version and SHA (latest on main).
 
 name: ARM64 Build & Test
 
@@ -99,6 +99,7 @@ jobs:
       packages: write
     outputs:
       image_tag: ${{ steps.image-check.outputs.image_tag }}
+      image_changed: ${{ steps.image-check.outputs.exists != 'true' }}
     steps:
       - uses: actions/checkout@v4
 
@@ -192,6 +193,8 @@ jobs:
     permissions:
       contents: read
       packages: write
+    outputs:
+      int8_changed: ${{ steps.int8-check.outputs.exists != 'true' }}
     env:
       DATA_DIR: /tmp/calibration-data
       OUTPUT_DIR: /tmp/int8-output
@@ -215,6 +218,8 @@ jobs:
           registry: ${{ env.REGISTRY }}
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
+
+      - uses: oras-project/setup-oras@v1
 
       - name: Check if INT8 model already exists in GHCR
         id: int8-check
@@ -380,11 +385,14 @@ jobs:
           args: --platform=linux/arm64
         continue-on-error: true
 
-  test-accuracy:
-    name: Accuracy Validation (chr20)
+  test-accuracy-fp32:
+    name: Accuracy Validation FP32 (chr20)
     needs: build-arm64
     runs-on: ubuntu-24.04-arm
-    if: always() && needs.build-arm64.result == 'success' && github.event_name != 'pull_request'
+    if: >-
+      always() && needs.build-arm64.result == 'success'
+      && github.event_name != 'pull_request'
+      && needs.build-arm64.outputs.image_changed == 'true'
     timeout-minutes: 120
     steps:
       - uses: actions/checkout@v4
@@ -402,7 +410,100 @@ jobs:
       - name: Upload benchmark results
         uses: actions/upload-artifact@v4
         with:
-          name: benchmark-results
+          name: benchmark-results-fp32
           path: |
             ~/deepvariant-benchmark/output/benchmark_result.json
             ~/deepvariant-benchmark/output/happy_results/
+
+  # INT8 accuracy validation using the quantized ONNX model.
+  # Volume-mounts the INT8 model over the FP32 model path inside the container
+  # so run_deepvariant uses the INT8 model without any script changes.
+  test-accuracy-int8:
+    name: Accuracy Validation INT8 (chr20)
+    needs: [build-arm64, quantize-int8]
+    runs-on: ubuntu-24.04-arm
+    if: >-
+      always() && needs.build-arm64.result == 'success'
+      && needs.quantize-int8.result == 'success'
+      && github.event_name != 'pull_request'
+      && needs.quantize-int8.outputs.int8_changed == 'true'
+    timeout-minutes: 120
+    env:
+      DATA_DIR: /tmp/benchmark-data
+      OUTPUT_DIR: /tmp/benchmark-output
+      INT8_MODEL_DIR: /tmp/int8-model
+      IMAGE_TAG: ${{ needs.build-arm64.outputs.image_tag }}
+      REF: GRCh38_no_alt_analysis_set.fasta
+      BAM: HG003.novaseq.pcr-free.35x.dedup.grch38_no_alt.chr20.bam
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: oras-project/setup-oras@v1
+
+      - name: Read project version
+        id: version
+        run: |
+          version=$(grep '^current_version' .bumpversion.toml | sed 's/.*= *"//;s/"//')
+          echo "tag=v${version}" >> "$GITHUB_OUTPUT"
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Pull runtime image
+        run: |
+          docker pull "${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${IMAGE_TAG}"
+
+      - name: Pull INT8 model from GHCR
+        run: |
+          mkdir -p "${INT8_MODEL_DIR}"
+          INT8_TAG="int8-wgs-${{ steps.version.outputs.tag }}"
+          cd "${INT8_MODEL_DIR}"
+          oras pull "${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${INT8_TAG}"
+          echo "INT8 model:"
+          ls -lh "${INT8_MODEL_DIR}/"
+
+      - name: Download calibration data (reference + BAM)
+        run: |
+          mkdir -p "${DATA_DIR}" "${OUTPUT_DIR}"
+          NCBI_REF_DIR="https://ftp.ncbi.nlm.nih.gov/genomes/all/GCA/000/001/405/GCA_000001405.15_GRCh38/seqs_for_alignment_pipelines.ucsc_ids"
+          GCS_DIR="https://storage.googleapis.com/deepvariant/case-study-testdata"
+
+          echo "Downloading reference FASTA (~900MB compressed)..."
+          curl -sS "${NCBI_REF_DIR}/GCA_000001405.15_GRCh38_no_alt_analysis_set.fna.gz" \
+            | gunzip > "${DATA_DIR}/${REF}"
+          curl -sS -o "${DATA_DIR}/${REF}.fai" \
+            "${NCBI_REF_DIR}/GCA_000001405.15_GRCh38_no_alt_analysis_set.fna.fai"
+
+          echo "Downloading BAM + index..."
+          curl -sS -o "${DATA_DIR}/${BAM}" "${GCS_DIR}/${BAM}"
+          curl -sS -o "${DATA_DIR}/${BAM}.bai" "${GCS_DIR}/${BAM}.bai"
+
+      - name: Run HG003 chr20 with INT8 model
+        run: |
+          IMAGE="${REGISTRY}/${IMAGE_NAME}:${IMAGE_TAG}"
+          INT8_ONNX="${INT8_MODEL_DIR}/model_int8_static_wgs.onnx"
+          docker run --rm \
+            -v "${DATA_DIR}:/data" \
+            -v "${OUTPUT_DIR}:/output" \
+            -v "${INT8_ONNX}:/opt/models/wgs/model.onnx" \
+            "${IMAGE}" \
+            /opt/deepvariant/bin/run_deepvariant \
+              --model_type=WGS \
+              --ref="/data/${REF}" \
+              --reads="/data/${BAM}" \
+              --output_vcf=/output/HG003_arm64_int8.vcf.gz \
+              --output_gvcf=/output/HG003_arm64_int8.g.vcf.gz \
+              --num_shards="$(nproc)" \
+              --regions=chr20 \
+              --intermediate_results_dir=/output/intermediate \
+              --use_onnx
+
+      - name: Upload benchmark results
+        uses: actions/upload-artifact@v4
+        with:
+          name: benchmark-results-int8
+          path: /tmp/benchmark-output/

@@ -47,14 +47,16 @@ echo "Reference: ${REF}"
 echo "Output:    ${OUTPUT_DIR}"
 echo ""
 
-# Run hap.py via Docker (pkrusche/hap.py supports ARM64)
+# Run hap.py via Docker (ARM64 image built from source, cached in GHCR)
+HAPPY_IMAGE="${HAPPY_IMAGE:-ghcr.io/qte77/deepvariant-linux-arm64:hap.py-arm64-v0.3.15}"
+echo "hap.py image: ${HAPPY_IMAGE}"
 echo "========== Running hap.py"
 docker run --rm \
   -v "$(dirname "${VCF}"):/vcf" \
   -v "$(dirname "${TRUTH_VCF}"):/truth" \
   -v "$(dirname "${REF}"):/ref" \
   -v "${OUTPUT_DIR}:/output" \
-  jmcdani20/hap.py:v0.3.12 \
+  "${HAPPY_IMAGE}" \
   /opt/hap.py/bin/hap.py \
     "/truth/$(basename "${TRUTH_VCF}")" \
     "/vcf/$(basename "${VCF}")" \

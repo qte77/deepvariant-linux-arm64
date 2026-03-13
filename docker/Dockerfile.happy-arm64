@@ -63,6 +63,13 @@ RUN git clone --depth=1 --branch "${HAPPY_VERSION}" \
 # pandas, and a custom bx-python fork (pkrusche/bx-python from Bitbucket).
 # No manual pip2 install step needed — that causes version conflicts.
 WORKDIR /tmp/hap.py
+
+# Reason: hap.py's bundled Boost b2 build hardcodes -m64 (x86-only).
+# On aarch64, gcc doesn't recognize -m64 → build fails. Strip it from
+# all jam/cfg files before install.py runs cmake → ExternalProject_Add.
+RUN find external/ -type f \( -name "*.jam" -o -name "*.cfg" -o -name "*.py" \) \
+    -exec sed -i 's/-m64//g' {} +
+
 RUN python2.7 install.py /opt/hap.py \
     --with-rtgtools \
     --no-tests

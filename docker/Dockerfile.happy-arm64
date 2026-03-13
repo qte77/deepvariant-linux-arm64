@@ -28,6 +28,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libssl-dev \
     libncurses5-dev \
     libboost-all-dev \
+    libopenblas-dev \
+    liblapack-dev \
+    gfortran \
     autoconf \
     automake \
     python2.7 \

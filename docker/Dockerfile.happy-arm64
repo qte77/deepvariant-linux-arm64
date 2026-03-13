@@ -65,14 +65,31 @@ RUN git clone --depth=1 --branch "${HAPPY_VERSION}" \
 WORKDIR /tmp/hap.py
 
 # Reason: hap.py's bundled Boost b2 build hardcodes -m64 (x86-only).
-# On aarch64, gcc doesn't recognize -m64 → build fails. Strip it from
-# all jam/cfg files before install.py runs cmake → ExternalProject_Add.
+# On aarch64, gcc doesn't recognize -m64 → build fails.
+# The find/sed patches source-tree files, but cmake's ExternalProject_Add
+# downloads a fresh Boost tarball into the build dir. Compiler wrappers catch
+# -m64 from ALL sources (jam files, generated configs, ExternalProject builds).
 RUN find external/ -type f \( -name "*.jam" -o -name "*.cfg" -o -name "*.py" \) \
     -exec sed -i 's/-m64//g' {} +
+
+# Reason: compiler wrappers that filter out -m64 from any invocation.
+# Shadows /usr/bin/gcc, g++, cc, c++ with wrappers that strip the flag.
+RUN for comp in gcc g++ cc c++; do \
+      real=$(which $comp) \
+      && mv "$real" "${real}.real" \
+      && printf '#!/bin/sh\nexec "%s.real" $(echo "$@" | sed "s/-m64//g")\n' "$real" > "$real" \
+      && chmod +x "$real"; \
+    done
 
 RUN python2.7 install.py /opt/hap.py \
     --with-rtgtools \
     --no-tests
+
+# Restore real compilers after build
+RUN for comp in gcc g++ cc c++; do \
+      real=$(which $comp) \
+      && mv "${real}.real" "$real"; \
+    done
 
 # =============================================================================
 # Runtime stage

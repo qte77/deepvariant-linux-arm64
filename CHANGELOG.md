@@ -6,11 +6,12 @@ Upstream compatibility: google/deepvariant v1.9.0
 ## [Unreleased]
 
 ### Added
-- WES and PacBio INT8 static calibration CI jobs (matrix strategy with model-specific BAM data and channel configs)
-- INT8 accuracy validation for WES and PacBio models (hap.py F1 scoring, chr20)
+- WES INT8 static calibration CI job (matrix strategy with WES-specific exome BAM data)
+- INT8 accuracy validation for WES model (hap.py F1 scoring, chr20)
 
 ### Changed
-- Converted `quantize-int8` and `test-accuracy-int8` from single WGS jobs to matrix over WGS/WES/PacBio
+- Converted `quantize-int8` and `test-accuracy-int8` from single WGS jobs to matrix over WGS/WES
+- PacBio INT8 calibration deferred — `alt_aligned_pileup=diff_channels` produces variable channel counts per TFRecord, needs `quantize_static_onnx.py` fix to pad/skip mismatched records
 
 ## [v1.9.0-arm64.8] — 2026-03-13
 

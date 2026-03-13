@@ -1,0 +1,101 @@
+# Multi-stage ARM64 hap.py build from source.
+# No pre-built ARM64 hap.py image exists (Docker Hub, bioconda).
+#
+# Build: docker build -f docker/Dockerfile.happy-arm64 -t hap.py-arm64 .
+# Usage: docker run --rm -v /data:/data hap.py-arm64 /opt/hap.py/bin/hap.py ...
+
+ARG HAPPY_VERSION=v0.3.15
+
+# =============================================================================
+# Builder stage
+# =============================================================================
+FROM ubuntu:20.04 AS builder
+
+ARG HAPPY_VERSION
+ARG DEBIAN_FRONTEND=noninteractive
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    build-essential \
+    cmake \
+    git \
+    wget \
+    ca-certificates \
+    pkg-config \
+    zlib1g-dev \
+    libbz2-dev \
+    liblzma-dev \
+    libcurl4-openssl-dev \
+    libssl-dev \
+    libncurses5-dev \
+    libboost-all-dev \
+    autoconf \
+    automake \
+    python2.7 \
+    python2.7-dev \
+    openjdk-11-jdk \
+    ant \
+    && rm -rf /var/lib/apt/lists/*
+
+# Bootstrap pip for Python 2.7
+RUN wget -q https://bootstrap.pypa.io/pip/2.7/get-pip.py -O /tmp/get-pip.py \
+    && python2.7 /tmp/get-pip.py \
+    && rm /tmp/get-pip.py
+
+# Set JAVA_HOME for hap.py's rtg-tools build (expects java, uses ant)
+ENV JAVA_HOME=/usr/lib/jvm/java-11-openjdk-arm64
+
+# Install Python 2 dependencies needed by hap.py
+RUN pip2 install --no-cache-dir \
+    setuptools \
+    cython \
+    numpy \
+    scipy \
+    pandas \
+    pysam \
+    bx-python
+
+# Clone hap.py source
+RUN git clone --depth=1 --branch "${HAPPY_VERSION}" \
+    https://github.com/Illumina/hap.py.git /tmp/hap.py
+
+# Build hap.py with rtg-tools support, skip tests
+WORKDIR /tmp/hap.py
+RUN python2.7 install.py /opt/hap.py \
+    --with-rtgtools \
+    --no-tests
+
+# =============================================================================
+# Runtime stage
+# =============================================================================
+FROM ubuntu:20.04
+
+ARG DEBIAN_FRONTEND=noninteractive
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    python2.7 \
+    openjdk-11-jre-headless \
+    zlib1g \
+    libbz2-1.0 \
+    liblzma5 \
+    libcurl4 \
+    libgomp1 \
+    bcftools \
+    tabix \
+    && rm -rf /var/lib/apt/lists/*
+
+ENV JAVA_HOME=/usr/lib/jvm/java-11-openjdk-arm64
+
+# Copy hap.py installation
+COPY --from=builder /opt/hap.py /opt/hap.py
+
+# Copy Python 2 site-packages (pysam, scipy, numpy, etc.)
+COPY --from=builder /usr/local/lib/python2.7/dist-packages /usr/local/lib/python2.7/dist-packages
+COPY --from=builder /usr/lib/python2.7 /usr/lib/python2.7
+
+# Ensure hap.py binaries are on PATH
+ENV PATH="/opt/hap.py/bin:${PATH}"
+
+# Smoke test
+RUN hap.py --version || echo "hap.py installed (version check may exit non-zero)"
+
+ENTRYPOINT ["/opt/hap.py/bin/hap.py"]

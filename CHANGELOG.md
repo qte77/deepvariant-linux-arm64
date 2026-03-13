@@ -5,6 +5,17 @@ Upstream compatibility: google/deepvariant v1.9.0
 
 ## [Unreleased]
 
+### Added
+- ARM64 hap.py build from source (`docker/Dockerfile.happy-arm64`) — multi-stage Ubuntu 20.04 build with Python 2.7, OpenJDK 11, rtg-tools
+- `build-happy-arm64.yml` dispatch workflow — builds once on `ubuntu-24.04-arm`, pushes to GHCR, skips if image exists
+- `HAPPY_IMAGE` env var in all accuracy scripts — replaces hardcoded `jmcdani20/hap.py:v0.3.12` (x86_64-only)
+- WES INT8 static calibration CI job (matrix strategy with WES-specific exome BAM data)
+- INT8 accuracy validation for WES model (hap.py F1 scoring, chr20)
+
+### Changed
+- Converted `quantize-int8` and `test-accuracy-int8` from single WGS jobs to matrix over WGS/WES
+- PacBio INT8 calibration deferred — `alt_aligned_pileup=diff_channels` produces variable channel counts per TFRecord, needs `quantize_static_onnx.py` fix to pad/skip mismatched records
+
 ## [v1.9.0-arm64.8] — 2026-03-13
 
 ### Added

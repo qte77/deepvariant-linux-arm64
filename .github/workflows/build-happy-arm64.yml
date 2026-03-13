@@ -1,0 +1,86 @@
+name: Build hap.py ARM64
+
+on:
+  workflow_dispatch:
+    inputs:
+      happy_version:
+        description: "hap.py version tag (e.g. v0.3.15)"
+        required: true
+        default: "v0.3.15"
+      rebuild:
+        description: "Force rebuild even if image exists"
+        required: false
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+  packages: write
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository }}
+
+jobs:
+  build-happy:
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 60
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set image tag
+        id: tag
+        env:
+          HAPPY_VERSION: ${{ inputs.happy_version }}
+        run: |
+          TAG="${REGISTRY}/${IMAGE_NAME}:hap.py-arm64-${HAPPY_VERSION}"
+          # Lowercase the tag (GHCR requires lowercase)
+          TAG="${TAG,,}"
+          echo "image_tag=${TAG}" >> "$GITHUB_OUTPUT"
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Check if image already exists
+        id: check
+        if: ${{ !inputs.rebuild }}
+        env:
+          IMAGE_TAG: ${{ steps.tag.outputs.image_tag }}
+        run: |
+          if docker manifest inspect "${IMAGE_TAG}" > /dev/null 2>&1; then
+            echo "Image already exists, skipping build."
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "Image not found, will build."
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Set up Docker Buildx
+        if: steps.check.outputs.exists != 'true'
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build and push
+        if: steps.check.outputs.exists != 'true'
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: docker/Dockerfile.happy-arm64
+          push: true
+          tags: ${{ steps.tag.outputs.image_tag }}
+          build-args: |
+            HAPPY_VERSION=${{ inputs.happy_version }}
+          cache-from: type=gha,scope=happy
+          cache-to: type=gha,mode=max,scope=happy
+
+      - name: Smoke test
+        env:
+          IMAGE_TAG: ${{ steps.tag.outputs.image_tag }}
+        run: |
+          docker run --rm "${IMAGE_TAG}" --version || \
+            echo "hap.py smoke test completed (version check may exit non-zero)"

@@ -169,6 +169,120 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
+  # ---------------------------------------------------------------------------
+  # Branch: Security scanning
+  # build-arm64 → security-scan
+  # ---------------------------------------------------------------------------
+
+  # Snyk container and IaC security scanning.
+  # Steps are skipped when SNYK_TOKEN secret is not configured.
+  # continue-on-error: true so findings don't block builds initially.
+  # Reason: snyk/snyk:docker image is x86-only (no ARM64 manifest).
+  security-scan:
+    name: Snyk Container & IaC Scan
+    needs: build-arm64
+    if: always() && needs.build-arm64.result == 'success'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      packages: read
+      security-events: write
+    env:
+      HAS_SNYK_TOKEN: ${{ secrets.SNYK_TOKEN != '' }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Snyk container scan
+        if: env.HAS_SNYK_TOKEN == 'true'
+        uses: snyk/actions/docker@master
+        env:
+          SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
+        with:
+          image: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ needs.build-arm64.outputs.image_tag }}
+          args: --platform=linux/arm64 --severity-threshold=high --sarif-file-output=snyk-container.sarif
+        continue-on-error: true
+
+      - name: Snyk IaC scan (Dockerfiles)
+        if: env.HAS_SNYK_TOKEN == 'true'
+        uses: snyk/actions/iac@master
+        env:
+          SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
+        with:
+          args: --severity-threshold=high --sarif-file-output=snyk-iac.sarif docker/
+        continue-on-error: true
+
+      - name: Upload container SARIF to GitHub Security
+        uses: github/codeql-action/upload-sarif@v4
+        with:
+          sarif_file: snyk-container.sarif
+        if: always() && hashFiles('snyk-container.sarif') != ''
+
+      - name: Upload IaC SARIF to GitHub Security
+        uses: github/codeql-action/upload-sarif@v4
+        with:
+          sarif_file: snyk-iac.sarif
+          category: snyk-iac
+        if: always() && hashFiles('snyk-iac.sarif') != ''
+
+      - name: Snyk monitor (track in dashboard)
+        if: env.HAS_SNYK_TOKEN == 'true' && github.ref == 'refs/heads/main'
+        uses: snyk/actions/docker@master
+        env:
+          SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
+        with:
+          command: monitor
+          image: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ needs.build-arm64.outputs.image_tag }}
+          args: --platform=linux/arm64
+        continue-on-error: true
+
+  # ---------------------------------------------------------------------------
+  # Branch: FP32 accuracy validation
+  # build-arm64 → test-accuracy-fp32
+  # ---------------------------------------------------------------------------
+
+  test-accuracy-fp32:
+    name: Accuracy Validation FP32 (chr20)
+    needs: build-arm64
+    runs-on: ubuntu-24.04-arm
+    if: >-
+      always() && needs.build-arm64.result == 'success'
+      && github.event_name != 'pull_request'
+      && needs.build-arm64.outputs.image_changed == 'true'
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Pull ARM64 Docker image
+        run: |
+          docker pull ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ needs.build-arm64.outputs.image_tag }}
+
+      - name: Run HG003 chr20 benchmark
+        run: |
+          bash scripts/benchmark_arm64.sh \
+            --accuracy \
+            --docker-image "${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ needs.build-arm64.outputs.image_tag }}"
+
+      - name: Upload benchmark results
+        uses: actions/upload-artifact@v4
+        with:
+          name: benchmark-results-fp32
+          path: |
+            ~/deepvariant-benchmark/output/benchmark_result.json
+            ~/deepvariant-benchmark/output/happy_results/
+
+  # ---------------------------------------------------------------------------
+  # Branch: INT8 quantization + accuracy validation
+  # build-arm64 → quantize-int8 → test-accuracy-int8
+  # ---------------------------------------------------------------------------
+
   # INT8 static quantization using real calibration data (WGS pileup images).
   # Generates TFRecords via make_examples on a small chr20 region, then runs
   # quantize_static_onnx.py with Percentile calibration (safe for InceptionV3).
@@ -315,105 +429,6 @@ jobs:
         with:
           name: int8-models-${{ steps.version.outputs.tag }}
           path: /tmp/int8-output/model_int8_static_wgs.onnx
-
-  # Snyk container and IaC security scanning.
-  # Steps are skipped when SNYK_TOKEN secret is not configured.
-  # continue-on-error: true so findings don't block builds initially.
-  # Reason: snyk/snyk:docker image is x86-only (no ARM64 manifest).
-  security-scan:
-    name: Snyk Container & IaC Scan
-    needs: build-arm64
-    if: always() && needs.build-arm64.result == 'success'
-    runs-on: ubuntu-latest
-    timeout-minutes: 15
-    permissions:
-      contents: read
-      packages: read
-      security-events: write
-    env:
-      HAS_SNYK_TOKEN: ${{ secrets.SNYK_TOKEN != '' }}
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Log in to GitHub Container Registry
-        uses: docker/login-action@v3
-        with:
-          registry: ${{ env.REGISTRY }}
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Snyk container scan
-        if: env.HAS_SNYK_TOKEN == 'true'
-        uses: snyk/actions/docker@master
-        env:
-          SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
-        with:
-          image: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ needs.build-arm64.outputs.image_tag }}
-          args: --platform=linux/arm64 --severity-threshold=high --sarif-file-output=snyk-container.sarif
-        continue-on-error: true
-
-      - name: Snyk IaC scan (Dockerfiles)
-        if: env.HAS_SNYK_TOKEN == 'true'
-        uses: snyk/actions/iac@master
-        env:
-          SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
-        with:
-          args: --severity-threshold=high --sarif-file-output=snyk-iac.sarif docker/
-        continue-on-error: true
-
-      - name: Upload container SARIF to GitHub Security
-        uses: github/codeql-action/upload-sarif@v4
-        with:
-          sarif_file: snyk-container.sarif
-        if: always() && hashFiles('snyk-container.sarif') != ''
-
-      - name: Upload IaC SARIF to GitHub Security
-        uses: github/codeql-action/upload-sarif@v4
-        with:
-          sarif_file: snyk-iac.sarif
-          category: snyk-iac
-        if: always() && hashFiles('snyk-iac.sarif') != ''
-
-      - name: Snyk monitor (track in dashboard)
-        if: env.HAS_SNYK_TOKEN == 'true' && github.ref == 'refs/heads/main'
-        uses: snyk/actions/docker@master
-        env:
-          SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
-        with:
-          command: monitor
-          image: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ needs.build-arm64.outputs.image_tag }}
-          args: --platform=linux/arm64
-        continue-on-error: true
-
-  test-accuracy-fp32:
-    name: Accuracy Validation FP32 (chr20)
-    needs: build-arm64
-    runs-on: ubuntu-24.04-arm
-    if: >-
-      always() && needs.build-arm64.result == 'success'
-      && github.event_name != 'pull_request'
-      && needs.build-arm64.outputs.image_changed == 'true'
-    timeout-minutes: 120
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Pull ARM64 Docker image
-        run: |
-          docker pull ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ needs.build-arm64.outputs.image_tag }}
-
-      - name: Run HG003 chr20 benchmark
-        run: |
-          bash scripts/benchmark_arm64.sh \
-            --accuracy \
-            --docker-image "${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ needs.build-arm64.outputs.image_tag }}"
-
-      - name: Upload benchmark results
-        uses: actions/upload-artifact@v4
-        with:
-          name: benchmark-results-fp32
-          path: |
-            ~/deepvariant-benchmark/output/benchmark_result.json
-            ~/deepvariant-benchmark/output/happy_results/
 
   # INT8 accuracy validation using the quantized ONNX model.
   # Volume-mounts the INT8 model over the FP32 model path inside the container

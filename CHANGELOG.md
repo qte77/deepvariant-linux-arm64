@@ -13,6 +13,7 @@ Upstream compatibility: google/deepvariant v1.9.0
 - `docs/research/bitnet-viability.md`: BitNet viability assessment (not viable for CNN architecture)
 
 ### Changed
+- Reorganized CI workflow into three parallel branches after build: security, FP32 accuracy, INT8 quantization + accuracy
 - Pinned uv from floating `0.10` to exact `0.10.9` in all Dockerfiles for reproducibility
 - Purge build-only apt packages (gcc, cpp, *-dev, pkg-config, git, curl) from runtime image
 - Expanded `.dockerignore` to exclude `tests/`, cache dirs, and egg-info

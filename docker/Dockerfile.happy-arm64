@@ -34,7 +34,6 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libcurl4-openssl-dev \
     libssl-dev \
     libncurses5-dev \
-    libboost-all-dev \
     libopenblas-dev \
     liblapack-dev \
     gfortran \

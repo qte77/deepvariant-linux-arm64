@@ -859,16 +859,15 @@ function run_happy() {
   run "zcat <"${INPUT_DIR}/$(basename $REF).gz" >"${UNCOMPRESSED_REF}""
 
   HAPPY_VERSION="v0.3.12"
-  HAPPY_IMAGE="${HAPPY_IMAGE:-ghcr.io/qte77/deepvariant-linux-arm64:hap.py-arm64-v0.3.15}"
   # Pulling twice in case the first one times out.
-  run "sudo docker pull ${HAPPY_IMAGE} || \
-    (sleep 5 ; sudo docker pull ${HAPPY_IMAGE})"
+  run "sudo docker pull jmcdani20/hap.py:${HAPPY_VERSION} || \
+    (sleep 5 ; sudo docker pull jmcdani20/hap.py:${HAPPY_VERSION})"
   # shellcheck disable=SC2086
   # shellcheck disable=SC2145
   run "( sudo docker run -i \
   -v "${INPUT_DIR}:${INPUT_DIR}" \
   -v "${OUTPUT_DIR}:${OUTPUT_DIR}" \
-  ${HAPPY_IMAGE} /opt/hap.py/bin/hap.py \
+  jmcdani20/hap.py:${HAPPY_VERSION} /opt/hap.py/bin/hap.py \
     "${INPUT_DIR}/${truth_vcf}" \
     "${OUTPUT_DIR}/${vcf_output}" \
     -f "${INPUT_DIR}/${truth_bed}" \

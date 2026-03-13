@@ -6,15 +6,19 @@ Upstream compatibility: google/deepvariant v1.9.0
 ## [Unreleased]
 
 ### Added
-- ARM64 hap.py build from source (`docker/Dockerfile.happy-arm64`) — multi-stage Ubuntu 20.04 build with Python 2.7, OpenJDK 11, rtg-tools
-- `build-happy-arm64.yml` dispatch workflow — builds once on `ubuntu-24.04-arm`, pushes to GHCR, skips if image exists
-- `HAPPY_IMAGE` env var in all accuracy scripts — replaces hardcoded `jmcdani20/hap.py:v0.3.12` (x86_64-only)
 - WES INT8 static calibration CI job (matrix strategy with WES-specific exome BAM data)
-- INT8 accuracy validation for WES model (hap.py F1 scoring, chr20)
+- INT8 accuracy validation for WES model (rtg vcfeval F1 scoring, chr20)
 
 ### Changed
+- Replaced hap.py with `rtg vcfeval` for accuracy validation — hap.py has no ARM64 build (Python 2.7 + Boost + x86 SIMD flags); hap.py `--engine=vcfeval` delegates to rtg internally; rtg-tools is Java and runs natively on ARM64
+- Restored upstream `scripts/inference_deepvariant.sh`, `scripts/inference_deeptrio.sh`, `scripts/benchmark_full_chr20.sh` (reverted `HAPPY_IMAGE` changes)
 - Converted `quantize-int8` and `test-accuracy-int8` from single WGS jobs to matrix over WGS/WES
 - PacBio INT8 calibration deferred — `alt_aligned_pileup=diff_channels` produces variable channel counts per TFRecord, needs `quantize_static_onnx.py` fix to pad/skip mismatched records
+
+### Removed
+- `docker/Dockerfile.happy-arm64` — no longer needed (rtg vcfeval replaces hap.py)
+- `.github/workflows/build-happy-arm64.yml` — no longer needed
+- `HAPPY_IMAGE` / `HAPPY_VERSION` env vars from CI workflow
 
 ## [v1.9.0-arm64.8] — 2026-03-13
 

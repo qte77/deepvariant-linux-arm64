@@ -38,7 +38,6 @@ env:
   DOCKER_IMAGE: deepvariant-arm64
   REGISTRY: ghcr.io
   IMAGE_NAME: ${{ github.repository }}
-  HAPPY_VERSION: v0.3.15
 
 jobs:
   # Rebuild the base builder image from source (Bazel compilation).
@@ -271,9 +270,12 @@ jobs:
         run: |
           docker pull ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ needs.build-arm64.outputs.image_tag }}
 
+      - name: Install accuracy validation deps
+        run: |
+          sudo apt-get update && sudo apt-get install -y --no-install-recommends \
+            default-jre-headless bc wget unzip
+
       - name: Run HG003 chr20 benchmark
-        env:
-          HAPPY_IMAGE: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:hap.py-arm64-${{ env.HAPPY_VERSION }}
         run: |
           bash scripts/benchmark_arm64.sh \
             --accuracy \
@@ -285,7 +287,7 @@ jobs:
           name: benchmark-results-fp32
           path: |
             ~/deepvariant-benchmark/output/benchmark_result.json
-            ~/deepvariant-benchmark/output/happy_results/
+            ~/deepvariant-benchmark/output/rtg_results/
 
   # ---------------------------------------------------------------------------
   # Branch: INT8 quantization + accuracy validation
@@ -592,17 +594,21 @@ jobs:
               --use_onnx \
               ${{ matrix.extra_args }}
 
-      - name: Validate INT8 accuracy (hap.py)
+      - name: Install accuracy validation deps
         if: steps.should-run.outputs.run == 'true'
-        env:
-          HAPPY_IMAGE: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:hap.py-arm64-${{ env.HAPPY_VERSION }}
+        run: |
+          sudo apt-get update && sudo apt-get install -y --no-install-recommends \
+            default-jre-headless bc wget unzip
+
+      - name: Validate INT8 accuracy (rtg vcfeval)
+        if: steps.should-run.outputs.run == 'true'
         run: |
           bash scripts/validate_accuracy.sh \
             --vcf "${OUTPUT_DIR}/HG003_arm64_int8_${{ matrix.model_type }}.vcf.gz" \
             --truth-vcf "${DATA_DIR}/HG003_GRCh38_1_22_v4.2.1_benchmark.vcf.gz" \
             --truth-bed "${DATA_DIR}/HG003_GRCh38_1_22_v4.2.1_benchmark_noinconsistent.bed" \
             --ref "${DATA_DIR}/${REF}" \
-            --output-dir "${OUTPUT_DIR}/happy_results"
+            --output-dir "${OUTPUT_DIR}/rtg_results"
 
       - name: Upload benchmark results
         if: steps.should-run.outputs.run == 'true'
@@ -612,4 +618,4 @@ jobs:
           path: |
             /tmp/benchmark-output/HG003_arm64_int8_${{ matrix.model_type }}.vcf.gz
             /tmp/benchmark-output/HG003_arm64_int8_${{ matrix.model_type }}.g.vcf.gz
-            /tmp/benchmark-output/happy_results/
+            /tmp/benchmark-output/rtg_results/

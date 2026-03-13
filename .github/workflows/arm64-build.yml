@@ -283,32 +283,48 @@ jobs:
   # build-arm64 → quantize-int8 → test-accuracy-int8
   # ---------------------------------------------------------------------------
 
-  # INT8 static quantization using real calibration data (WGS pileup images).
-  # Generates TFRecords via make_examples on a small chr20 region, then runs
+  # INT8 static quantization using real calibration data (domain-specific pileup images).
+  # Generates TFRecords via make_examples on a chr20 region, then runs
   # quantize_static_onnx.py with Percentile calibration (safe for InceptionV3).
   # Reason: dynamic INT8 doesn't work on ARM64 — ConvInteger(10) ops unsupported
   # by CPUExecutionProvider. Static INT8 with real data is the only viable path.
   #
+  # Matrix runs WGS, WES, and PacBio in parallel with model-specific BAM data
+  # and channel configurations. Each produces a separate GHCR artifact.
+  #
   # Runner pricing (ARM64 Linux, as of 2026-01):
   #   ubuntu-24.04-arm (4 vCPU, 16GB) — free for public repos, $0.005/min private
-  #   Larger runners require runner groups (Team/Enterprise plans):
-  #     4-core $0.008/min, 8-core $0.014/min, 16-core $0.026/min,
-  #     32-core $0.050/min, 64-core $0.098/min
   # Sources:
   #   https://docs.github.com/en/billing/reference/actions-runner-pricing
   #   https://docs.github.com/en/actions/reference/runners/github-hosted-runners
-  #   https://github.com/orgs/community/discussions/148648
   quantize-int8:
-    name: INT8 Static Quantization (WGS)
+    name: INT8 Static Quantization (${{ matrix.model_type }})
     needs: build-arm64
     runs-on: ${{ inputs.quantize_runner || 'ubuntu-24.04-arm' }}
     if: always() && needs.build-arm64.result == 'success'
-    timeout-minutes: 30
+    timeout-minutes: 45
     permissions:
       contents: read
       packages: write
-    outputs:
-      int8_changed: ${{ steps.int8-check.outputs.exists != 'true' }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - model_type: wgs
+            model_type_upper: WGS
+            bam_url: "https://storage.googleapis.com/deepvariant/case-study-testdata/HG003.novaseq.pcr-free.35x.dedup.grch38_no_alt.chr20.bam"
+            channel_list: "read_base,base_quality,mapping_quality,strand,read_supports_variant,base_differs_from_ref,insert_size"
+            extra_make_examples_args: ""
+          - model_type: wes
+            model_type_upper: WES
+            bam_url: "https://storage.googleapis.com/deepvariant/exome-case-study-testdata/HG003.novaseq.wes_idt.100x.dedup.bam"
+            channel_list: "read_base,base_quality,mapping_quality,strand,read_supports_variant,base_differs_from_ref,insert_size"
+            extra_make_examples_args: ""
+          - model_type: pacbio
+            model_type_upper: PACBIO
+            bam_url: "https://storage.googleapis.com/deepvariant/pacbio-case-study-testdata/HG003.pfda_challenge.grch38.phased.chr20.bam"
+            channel_list: "read_base,base_quality,mapping_quality,strand,read_supports_variant,base_differs_from_ref,haplotype"
+            extra_make_examples_args: "--alt_aligned_pileup=diff_channels --min_mapping_quality=1 --parse_sam_aux_fields --partition_size=25000 --phase_reads --pileup_image_width=147 --sort_by_haplotypes --track_ref_reads --trim_reads_for_pileup --vsc_min_fraction_indels=0.12 --nosplit_skip_reads"
     env:
       DATA_DIR: /tmp/calibration-data
       OUTPUT_DIR: /tmp/int8-output
@@ -338,10 +354,10 @@ jobs:
       - name: Check if INT8 model already exists in GHCR
         id: int8-check
         run: |
-          INT8_TAG="int8-wgs-${{ steps.version.outputs.tag }}"
+          INT8_TAG="int8-${{ matrix.model_type }}-${{ steps.version.outputs.tag }}"
           if oras manifest fetch "${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${INT8_TAG}" > /dev/null 2>&1; then
             echo "exists=true" >> "$GITHUB_OUTPUT"
-            echo "::notice::INT8 model already exists in GHCR (tag: ${INT8_TAG}), skipping quantization."
+            echo "::notice::INT8 ${{ matrix.model_type }} model already exists in GHCR (tag: ${INT8_TAG}), skipping."
           else
             echo "exists=false" >> "$GITHUB_OUTPUT"
           fi
@@ -356,9 +372,7 @@ jobs:
         run: |
           mkdir -p "${DATA_DIR}" "${OUTPUT_DIR}"
           NCBI_REF_DIR="https://ftp.ncbi.nlm.nih.gov/genomes/all/GCA/000/001/405/GCA_000001405.15_GRCh38/seqs_for_alignment_pipelines.ucsc_ids"
-          GCS_DIR="https://storage.googleapis.com/deepvariant/case-study-testdata"
           REF="GRCh38_no_alt_analysis_set.fasta"
-          BAM="HG003.novaseq.pcr-free.35x.dedup.grch38_no_alt.chr20.bam"
 
           echo "Downloading reference FASTA (~900MB compressed)..."
           curl -sS "${NCBI_REF_DIR}/GCA_000001405.15_GRCh38_no_alt_analysis_set.fna.gz" \
@@ -366,15 +380,18 @@ jobs:
           curl -sS -o "${DATA_DIR}/${REF}.fai" \
             "${NCBI_REF_DIR}/GCA_000001405.15_GRCh38_no_alt_analysis_set.fna.fai"
 
-          echo "Downloading BAM + index..."
-          curl -sS -o "${DATA_DIR}/${BAM}" "${GCS_DIR}/${BAM}"
-          curl -sS -o "${DATA_DIR}/${BAM}.bai" "${GCS_DIR}/${BAM}.bai"
+          BAM_URL="${{ matrix.bam_url }}"
+          BAM_FILE=$(basename "${BAM_URL}")
+          echo "Downloading BAM: ${BAM_FILE}..."
+          curl -sS -o "${DATA_DIR}/${BAM_FILE}" "${BAM_URL}"
+          curl -sS -o "${DATA_DIR}/${BAM_FILE}.bai" "${BAM_URL}.bai"
 
       - name: Generate calibration TFRecords (make_examples)
         if: steps.int8-check.outputs.exists != 'true'
         run: |
           IMAGE="${REGISTRY}/${IMAGE_NAME}:${IMAGE_TAG}"
-          echo "Running make_examples on ${CALIBRATION_REGION} (${NUM_SHARDS} shards)..."
+          BAM_FILE=$(basename "${{ matrix.bam_url }}")
+          echo "Running make_examples for ${{ matrix.model_type }} on ${CALIBRATION_REGION} (${NUM_SHARDS} shards)..."
           docker run --rm \
             -v "${DATA_DIR}:/data" \
             -v "${OUTPUT_DIR}:/output" \
@@ -382,74 +399,88 @@ jobs:
             /opt/deepvariant/bin/make_examples \
               --mode=calling \
               --ref="/data/GRCh38_no_alt_analysis_set.fasta" \
-              --reads="/data/HG003.novaseq.pcr-free.35x.dedup.grch38_no_alt.chr20.bam" \
+              --reads="/data/${BAM_FILE}" \
               --regions="${CALIBRATION_REGION}" \
-              --channel_list="read_base,base_quality,mapping_quality,strand,read_supports_variant,base_differs_from_ref,insert_size" \
-              --examples="/output/calibration.tfrecord@${NUM_SHARDS}.gz"
+              --channel_list="${{ matrix.channel_list }}" \
+              --examples="/output/calibration.tfrecord@${NUM_SHARDS}.gz" \
+              ${{ matrix.extra_make_examples_args }}
 
           echo "Generated TFRecords:"
           ls -lh "${OUTPUT_DIR}"/calibration.tfrecord-*
 
-      - name: Run static INT8 quantization (WGS, Percentile)
+      - name: Run static INT8 quantization (${{ matrix.model_type }}, Percentile)
         if: steps.int8-check.outputs.exists != 'true'
         run: |
           IMAGE="${REGISTRY}/${IMAGE_NAME}:${IMAGE_TAG}"
-          echo "Quantizing WGS model (${NUM_CALIBRATION_SAMPLES} samples, Percentile)..."
+          echo "Quantizing ${{ matrix.model_type }} model (${NUM_CALIBRATION_SAMPLES} samples, Percentile)..."
           docker run --rm \
             -v "${OUTPUT_DIR}:/output" \
             "${IMAGE}" \
             python3 /opt/deepvariant/scripts/quantize_static_onnx.py \
-              --input /opt/models/wgs/model.onnx \
-              --output /output/model_int8_static_wgs.onnx \
+              --input /opt/models/${{ matrix.model_type }}/model.onnx \
+              --output /output/model_int8_static_${{ matrix.model_type }}.onnx \
               --tfrecord_dir /output \
-              --saved_model_dir /opt/models/wgs \
+              --saved_model_dir /opt/models/${{ matrix.model_type }} \
               --num_calibration_samples "${NUM_CALIBRATION_SAMPLES}" \
               --calibration_method percentile
 
           echo "INT8 model size:"
-          ls -lh "${OUTPUT_DIR}"/model_int8_static_wgs.onnx
-
-          # TODO: WES and PacBio calibration — WGS TFRecords may not be
-          # representative for WES/PacBio activation distributions. Needs
-          # model-specific BAM data or cross-domain accuracy validation.
-          # For now, only WGS is quantized in CI.
+          ls -lh "${OUTPUT_DIR}"/model_int8_static_${{ matrix.model_type }}.onnx
 
       - name: Push INT8 model to GHCR
         if: steps.int8-check.outputs.exists != 'true'
         run: |
-          INT8_TAG="int8-wgs-${{ steps.version.outputs.tag }}"
+          INT8_TAG="int8-${{ matrix.model_type }}-${{ steps.version.outputs.tag }}"
           echo "${{ secrets.GITHUB_TOKEN }}" | oras login "${{ env.REGISTRY }}" -u "${{ github.actor }}" --password-stdin
           oras push "${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${INT8_TAG}" \
-            /tmp/int8-output/model_int8_static_wgs.onnx:application/vnd.onnx.model
-          echo "::notice::Pushed INT8 model to GHCR (tag: ${INT8_TAG})"
+            "${OUTPUT_DIR}/model_int8_static_${{ matrix.model_type }}.onnx:application/vnd.onnx.model"
+          echo "::notice::Pushed INT8 ${{ matrix.model_type }} model to GHCR (tag: ${INT8_TAG})"
 
       - name: Upload INT8 model artifact
         if: steps.int8-check.outputs.exists != 'true'
         uses: actions/upload-artifact@v4
         with:
-          name: int8-models-${{ steps.version.outputs.tag }}
-          path: /tmp/int8-output/model_int8_static_wgs.onnx
+          name: int8-model-${{ matrix.model_type }}-${{ steps.version.outputs.tag }}
+          path: /tmp/int8-output/model_int8_static_${{ matrix.model_type }}.onnx
 
-  # INT8 accuracy validation using the quantized ONNX model.
-  # Volume-mounts the INT8 model over the FP32 model path inside the container
+  # INT8 accuracy validation using the quantized ONNX models.
+  # Volume-mounts each INT8 model over the FP32 model path inside the container
   # so run_deepvariant uses the INT8 model without any script changes.
+  # Matrix runs WGS, WES, and PacBio in parallel with model-specific test data.
   test-accuracy-int8:
-    name: Accuracy Validation INT8 (chr20)
+    name: Accuracy Validation INT8 ${{ matrix.model_type_upper }} (chr20)
     needs: [build-arm64, quantize-int8]
     runs-on: ubuntu-24.04-arm
     if: >-
       always() && needs.build-arm64.result == 'success'
       && needs.quantize-int8.result == 'success'
       && github.event_name != 'pull_request'
-      && needs.quantize-int8.outputs.int8_changed == 'true'
     timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - model_type: wgs
+            model_type_upper: WGS
+            bam_url: "https://storage.googleapis.com/deepvariant/case-study-testdata/HG003.novaseq.pcr-free.35x.dedup.grch38_no_alt.chr20.bam"
+            regions: "chr20"
+            extra_args: ""
+          - model_type: wes
+            model_type_upper: WES
+            bam_url: "https://storage.googleapis.com/deepvariant/exome-case-study-testdata/HG003.novaseq.wes_idt.100x.dedup.bam"
+            regions: "chr20"
+            extra_args: ""
+          - model_type: pacbio
+            model_type_upper: PACBIO
+            bam_url: "https://storage.googleapis.com/deepvariant/pacbio-case-study-testdata/HG003.pfda_challenge.grch38.phased.chr20.bam"
+            regions: "chr20"
+            extra_args: ""
     env:
       DATA_DIR: /tmp/benchmark-data
       OUTPUT_DIR: /tmp/benchmark-output
       INT8_MODEL_DIR: /tmp/int8-model
       IMAGE_TAG: ${{ needs.build-arm64.outputs.image_tag }}
       REF: GRCh38_no_alt_analysis_set.fasta
-      BAM: HG003.novaseq.pcr-free.35x.dedup.grch38_no_alt.chr20.bam
     steps:
       - uses: actions/checkout@v4
 
@@ -461,7 +492,22 @@ jobs:
           version=$(grep '^current_version' .bumpversion.toml | sed 's/.*= *"//;s/"//')
           echo "tag=v${version}" >> "$GITHUB_OUTPUT"
 
+      - name: Check if INT8 model was built this run
+        id: should-run
+        run: |
+          INT8_TAG="int8-${{ matrix.model_type }}-${{ steps.version.outputs.tag }}"
+          # Reason: only run accuracy validation when the model was freshly quantized.
+          # The quantize job outputs int8_changed per model type, but matrix outputs
+          # can't be consumed per-leg. Instead, check the artifact directly.
+          if oras manifest fetch "${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${INT8_TAG}" > /dev/null 2>&1; then
+            echo "run=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "run=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::INT8 ${{ matrix.model_type }} model not found in GHCR, skipping accuracy validation."
+          fi
+
       - name: Log in to GitHub Container Registry
+        if: steps.should-run.outputs.run == 'true'
         uses: docker/login-action@v3
         with:
           registry: ${{ env.REGISTRY }}
@@ -469,23 +515,25 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Pull runtime image
+        if: steps.should-run.outputs.run == 'true'
         run: |
           docker pull "${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${IMAGE_TAG}"
 
       - name: Pull INT8 model from GHCR
+        if: steps.should-run.outputs.run == 'true'
         run: |
           mkdir -p "${INT8_MODEL_DIR}"
-          INT8_TAG="int8-wgs-${{ steps.version.outputs.tag }}"
+          INT8_TAG="int8-${{ matrix.model_type }}-${{ steps.version.outputs.tag }}"
           cd "${INT8_MODEL_DIR}"
           oras pull "${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${INT8_TAG}"
           echo "INT8 model:"
           ls -lh "${INT8_MODEL_DIR}/"
 
-      - name: Download calibration data (reference + BAM)
+      - name: Download test data (reference + BAM)
+        if: steps.should-run.outputs.run == 'true'
         run: |
           mkdir -p "${DATA_DIR}" "${OUTPUT_DIR}"
           NCBI_REF_DIR="https://ftp.ncbi.nlm.nih.gov/genomes/all/GCA/000/001/405/GCA_000001405.15_GRCh38/seqs_for_alignment_pipelines.ucsc_ids"
-          GCS_DIR="https://storage.googleapis.com/deepvariant/case-study-testdata"
 
           echo "Downloading reference FASTA (~900MB compressed)..."
           curl -sS "${NCBI_REF_DIR}/GCA_000001405.15_GRCh38_no_alt_analysis_set.fna.gz" \
@@ -493,11 +541,14 @@ jobs:
           curl -sS -o "${DATA_DIR}/${REF}.fai" \
             "${NCBI_REF_DIR}/GCA_000001405.15_GRCh38_no_alt_analysis_set.fna.fai"
 
-          echo "Downloading BAM + index..."
-          curl -sS -o "${DATA_DIR}/${BAM}" "${GCS_DIR}/${BAM}"
-          curl -sS -o "${DATA_DIR}/${BAM}.bai" "${GCS_DIR}/${BAM}.bai"
+          BAM_URL="${{ matrix.bam_url }}"
+          BAM_FILE=$(basename "${BAM_URL}")
+          echo "Downloading BAM: ${BAM_FILE}..."
+          curl -sS -o "${DATA_DIR}/${BAM_FILE}" "${BAM_URL}"
+          curl -sS -o "${DATA_DIR}/${BAM_FILE}.bai" "${BAM_URL}.bai"
 
       - name: Download GIAB truth set (VCF + BED)
+        if: steps.should-run.outputs.run == 'true'
         run: |
           GIAB_DIR="https://ftp-trace.ncbi.nlm.nih.gov/giab/ftp/release/AshkenazimTrio/HG003_NA24149_father/NISTv4.2.1/GRCh38"
           TRUTH_VCF="HG003_GRCh38_1_22_v4.2.1_benchmark.vcf.gz"
@@ -506,40 +557,45 @@ jobs:
             curl -sS -o "${DATA_DIR}/${FILE}" "${GIAB_DIR}/${FILE}"
           done
 
-      - name: Run HG003 chr20 with INT8 model
+      - name: Run HG003 chr20 with INT8 ${{ matrix.model_type }} model
+        if: steps.should-run.outputs.run == 'true'
         run: |
           IMAGE="${REGISTRY}/${IMAGE_NAME}:${IMAGE_TAG}"
-          INT8_ONNX="${INT8_MODEL_DIR}/model_int8_static_wgs.onnx"
+          INT8_ONNX="${INT8_MODEL_DIR}/model_int8_static_${{ matrix.model_type }}.onnx"
+          BAM_FILE=$(basename "${{ matrix.bam_url }}")
           docker run --rm \
             -v "${DATA_DIR}:/data" \
             -v "${OUTPUT_DIR}:/output" \
-            -v "${INT8_ONNX}:/opt/models/wgs/model.onnx" \
+            -v "${INT8_ONNX}:/opt/models/${{ matrix.model_type }}/model.onnx" \
             "${IMAGE}" \
             /opt/deepvariant/bin/run_deepvariant \
-              --model_type=WGS \
+              --model_type=${{ matrix.model_type_upper }} \
               --ref="/data/${REF}" \
-              --reads="/data/${BAM}" \
-              --output_vcf=/output/HG003_arm64_int8.vcf.gz \
-              --output_gvcf=/output/HG003_arm64_int8.g.vcf.gz \
+              --reads="/data/${BAM_FILE}" \
+              --output_vcf=/output/HG003_arm64_int8_${{ matrix.model_type }}.vcf.gz \
+              --output_gvcf=/output/HG003_arm64_int8_${{ matrix.model_type }}.g.vcf.gz \
               --num_shards="$(nproc)" \
-              --regions=chr20 \
+              --regions=${{ matrix.regions }} \
               --intermediate_results_dir=/output/intermediate \
-              --use_onnx
+              --use_onnx \
+              ${{ matrix.extra_args }}
 
       - name: Validate INT8 accuracy (hap.py)
+        if: steps.should-run.outputs.run == 'true'
         run: |
           bash scripts/validate_accuracy.sh \
-            --vcf "${OUTPUT_DIR}/HG003_arm64_int8.vcf.gz" \
+            --vcf "${OUTPUT_DIR}/HG003_arm64_int8_${{ matrix.model_type }}.vcf.gz" \
             --truth-vcf "${DATA_DIR}/HG003_GRCh38_1_22_v4.2.1_benchmark.vcf.gz" \
             --truth-bed "${DATA_DIR}/HG003_GRCh38_1_22_v4.2.1_benchmark_noinconsistent.bed" \
             --ref "${DATA_DIR}/${REF}" \
             --output-dir "${OUTPUT_DIR}/happy_results"
 
       - name: Upload benchmark results
+        if: steps.should-run.outputs.run == 'true'
         uses: actions/upload-artifact@v4
         with:
-          name: benchmark-results-int8
+          name: benchmark-results-int8-${{ matrix.model_type }}
           path: |
-            /tmp/benchmark-output/HG003_arm64_int8.vcf.gz
-            /tmp/benchmark-output/HG003_arm64_int8.g.vcf.gz
+            /tmp/benchmark-output/HG003_arm64_int8_${{ matrix.model_type }}.vcf.gz
+            /tmp/benchmark-output/HG003_arm64_int8_${{ matrix.model_type }}.g.vcf.gz
             /tmp/benchmark-output/happy_results/

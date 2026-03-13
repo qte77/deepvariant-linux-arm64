@@ -5,6 +5,8 @@ Upstream compatibility: google/deepvariant v1.9.0
 
 ## [Unreleased]
 
+## [v1.9.0-arm64.8] — 2026-03-13
+
 ### Added
 - Snyk container and IaC security scanning CI job (optional, requires `SNYK_TOKEN` secret)
 - INT8 accuracy validation CI job — validates quantized model against GIAB HG003 chr20 with hap.py F1 scoring (SNP >= 0.9995, INDEL >= 0.9945)

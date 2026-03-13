@@ -482,6 +482,15 @@ jobs:
           curl -sS -o "${DATA_DIR}/${BAM}" "${GCS_DIR}/${BAM}"
           curl -sS -o "${DATA_DIR}/${BAM}.bai" "${GCS_DIR}/${BAM}.bai"
 
+      - name: Download GIAB truth set (VCF + BED)
+        run: |
+          GIAB_DIR="https://ftp-trace.ncbi.nlm.nih.gov/giab/ftp/release/AshkenazimTrio/HG003_NA24149_father/NISTv4.2.1/GRCh38"
+          TRUTH_VCF="HG003_GRCh38_1_22_v4.2.1_benchmark.vcf.gz"
+          TRUTH_BED="HG003_GRCh38_1_22_v4.2.1_benchmark_noinconsistent.bed"
+          for FILE in "${TRUTH_VCF}" "${TRUTH_VCF}.tbi" "${TRUTH_BED}"; do
+            curl -sS -o "${DATA_DIR}/${FILE}" "${GIAB_DIR}/${FILE}"
+          done
+
       - name: Run HG003 chr20 with INT8 model
         run: |
           IMAGE="${REGISTRY}/${IMAGE_NAME}:${IMAGE_TAG}"
@@ -502,8 +511,20 @@ jobs:
               --intermediate_results_dir=/output/intermediate \
               --use_onnx
 
+      - name: Validate INT8 accuracy (hap.py)
+        run: |
+          bash scripts/validate_accuracy.sh \
+            --vcf "${OUTPUT_DIR}/HG003_arm64_int8.vcf.gz" \
+            --truth-vcf "${DATA_DIR}/HG003_GRCh38_1_22_v4.2.1_benchmark.vcf.gz" \
+            --truth-bed "${DATA_DIR}/HG003_GRCh38_1_22_v4.2.1_benchmark_noinconsistent.bed" \
+            --ref "${DATA_DIR}/${REF}" \
+            --output-dir "${OUTPUT_DIR}/happy_results"
+
       - name: Upload benchmark results
         uses: actions/upload-artifact@v4
         with:
           name: benchmark-results-int8
-          path: /tmp/benchmark-output/
+          path: |
+            /tmp/benchmark-output/HG003_arm64_int8.vcf.gz
+            /tmp/benchmark-output/HG003_arm64_int8.g.vcf.gz
+            /tmp/benchmark-output/happy_results/

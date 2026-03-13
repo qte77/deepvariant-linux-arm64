@@ -7,7 +7,7 @@ Upstream compatibility: google/deepvariant v1.9.0
 
 ### Added
 - Snyk container and IaC security scanning CI job (optional, requires `SNYK_TOKEN` secret)
-- INT8 accuracy validation CI job — validates quantized model against GIAB HG003 chr20
+- INT8 accuracy validation CI job — validates quantized model against GIAB HG003 chr20 with hap.py F1 scoring (SNP >= 0.9995, INDEL >= 0.9945)
 - INT8 model caching in GHCR via `oras` (skips redundant quantization on re-runs)
 - Build-skip for unchanged Docker images (checks GHCR before building)
 - `docs/research/bitnet-viability.md`: BitNet viability assessment (not viable for CNN architecture)

@@ -314,23 +314,26 @@ jobs:
             model_type_upper: WGS
             bam_url: "https://storage.googleapis.com/deepvariant/case-study-testdata/HG003.novaseq.pcr-free.35x.dedup.grch38_no_alt.chr20.bam"
             channel_list: "read_base,base_quality,mapping_quality,strand,read_supports_variant,base_differs_from_ref,insert_size"
+            calibration_region: "chr20:10000000-15000000"
             extra_make_examples_args: ""
           - model_type: wes
             model_type_upper: WES
             bam_url: "https://storage.googleapis.com/deepvariant/exome-case-study-testdata/HG003.novaseq.wes_idt.100x.dedup.bam"
             channel_list: "read_base,base_quality,mapping_quality,strand,read_supports_variant,base_differs_from_ref,insert_size"
+            calibration_region: "chr20:10000000-15000000"
             extra_make_examples_args: ""
           - model_type: pacbio
             model_type_upper: PACBIO
             bam_url: "https://storage.googleapis.com/deepvariant/pacbio-case-study-testdata/HG003.pfda_challenge.grch38.phased.chr20.bam"
             channel_list: "read_base,base_quality,mapping_quality,strand,read_supports_variant,base_differs_from_ref,haplotype"
-            extra_make_examples_args: "--alt_aligned_pileup=diff_channels --min_mapping_quality=1 --parse_sam_aux_fields --partition_size=25000 --phase_reads --pileup_image_width=147 --sort_by_haplotypes --track_ref_reads --trim_reads_for_pileup --vsc_min_fraction_indels=0.12 --nosplit_skip_reads"
+            # Reason: PacBio golden tests use chr20:9M-9.1M region. Use same region
+            # to ensure make_examples produces TFRecords matching model input shape.
+            calibration_region: "chr20:9000000-9100000"
+            extra_make_examples_args: "--alt_aligned_pileup=diff_channels --max_reads_per_partition=600 --min_mapping_quality=1 --parse_sam_aux_fields --partition_size=25000 --phase_reads --pileup_image_width=147 --sort_by_haplotypes --track_ref_reads --trim_reads_for_pileup --vsc_min_fraction_indels=0.12 --nosplit_skip_reads"
     env:
       DATA_DIR: /tmp/calibration-data
       OUTPUT_DIR: /tmp/int8-output
       IMAGE_TAG: ${{ needs.build-arm64.outputs.image_tag }}
-      # Reason: 5MB region yields ~2300 examples — well above the 500 needed
-      CALIBRATION_REGION: "chr20:10000000-15000000"
       NUM_SHARDS: "4"
       NUM_CALIBRATION_SAMPLES: "500"
     steps:
@@ -391,6 +394,7 @@ jobs:
         run: |
           IMAGE="${REGISTRY}/${IMAGE_NAME}:${IMAGE_TAG}"
           BAM_FILE=$(basename "${{ matrix.bam_url }}")
+          CALIBRATION_REGION="${{ matrix.calibration_region }}"
           echo "Running make_examples for ${{ matrix.model_type }} on ${CALIBRATION_REGION} (${NUM_SHARDS} shards)..."
           docker run --rm \
             -v "${DATA_DIR}:/data" \
@@ -432,8 +436,9 @@ jobs:
         run: |
           INT8_TAG="int8-${{ matrix.model_type }}-${{ steps.version.outputs.tag }}"
           echo "${{ secrets.GITHUB_TOKEN }}" | oras login "${{ env.REGISTRY }}" -u "${{ github.actor }}" --password-stdin
+          cd "${OUTPUT_DIR}"
           oras push "${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${INT8_TAG}" \
-            "${OUTPUT_DIR}/model_int8_static_${{ matrix.model_type }}.onnx:application/vnd.onnx.model"
+            "model_int8_static_${{ matrix.model_type }}.onnx:application/vnd.onnx.model"
           echo "::notice::Pushed INT8 ${{ matrix.model_type }} model to GHCR (tag: ${INT8_TAG})"
 
       - name: Upload INT8 model artifact

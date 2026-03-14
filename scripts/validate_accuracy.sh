@@ -55,23 +55,29 @@ echo ""
 
 # ---------------------------------------------------------------------------
 # Install rtg-tools if not already present
+# Reason: the upstream `rtg` shell wrapper rejects non-x86_64 arches.
+# We invoke the JAR directly via a wrapper function to bypass that check.
 # ---------------------------------------------------------------------------
-if ! command -v rtg &>/dev/null; then
+if command -v rtg &>/dev/null && rtg version &>/dev/null; then
+  rtg_cmd() { rtg "$@"; }
+  echo "Using system rtg-tools"
+else
   echo "========== Installing rtg-tools ${RTG_VERSION}"
   RTG_URL="https://github.com/RealTimeGenomics/rtg-tools/releases/download/${RTG_VERSION}/rtg-tools-${RTG_VERSION}-nojre.zip"
   RTG_TMP=$(mktemp -d)
   wget -q "${RTG_URL}" -O "${RTG_TMP}/rtg-tools.zip"
   unzip -q "${RTG_TMP}/rtg-tools.zip" -d "${RTG_TMP}"
   RTG_DIR="${RTG_TMP}/rtg-tools-${RTG_VERSION}"
-  # Disable usage logging prompt
-  echo "RTG_TALKBACK=false" > "${RTG_DIR}/rtg.cfg"
-  echo "RTG_USAGE=false" >> "${RTG_DIR}/rtg.cfg"
-  export PATH="${RTG_DIR}:${PATH}"
+  RTG_JAR="${RTG_DIR}/RTG.jar"
   rm "${RTG_TMP}/rtg-tools.zip"
   echo "rtg-tools installed to ${RTG_DIR}"
+
+  # Reason: upstream rtg wrapper checks uname -m for x86_64 and exits on ARM64.
+  # The JAR itself is pure Java and runs on any architecture.
+  rtg_cmd() { java -jar "${RTG_JAR}" "$@"; }
 fi
 
-echo "rtg version: $(rtg version 2>&1 | head -1)"
+echo "rtg version: $(rtg_cmd version 2>&1 | head -1)"
 echo ""
 
 # ---------------------------------------------------------------------------
@@ -80,7 +86,7 @@ echo ""
 SDF_DIR="${OUTPUT_DIR}/ref.sdf"
 if [[ ! -d "${SDF_DIR}" ]]; then
   echo "========== Converting reference to SDF format"
-  rtg format -o "${SDF_DIR}" "${REF}"
+  rtg_cmd format -o "${SDF_DIR}" "${REF}"
   echo ""
 fi
 
@@ -91,7 +97,7 @@ EVAL_DIR="${OUTPUT_DIR}/vcfeval"
 rm -rf "${EVAL_DIR}"
 
 echo "========== Running rtg vcfeval"
-rtg vcfeval \
+rtg_cmd vcfeval \
   --baseline="${TRUTH_VCF}" \
   --calls="${VCF}" \
   --evaluation-regions="${TRUTH_BED}" \

@@ -17,7 +17,6 @@ REGION="chr20"
 NPROC=$(nproc)
 USE_ONNX=""
 ONNX_MODEL=""
-HAPPY_IMAGE="${HAPPY_IMAGE:-ghcr.io/qte77/deepvariant-linux-arm64:hap.py-arm64-v0.3.15}"
 
 # BF16 env
 BF16_ENVS="-e ONEDNN_DEFAULT_FPMATH_MODE=BF16"
@@ -134,7 +133,7 @@ for CONFIG in fp32 bf16; do
   echo "  --- hap.py: ${CONFIG}_run1 ---"
   docker run --rm \
     -v "${DATA_DIR}:/data" \
-    "${HAPPY_IMAGE}" \
+    jmcdani20/hap.py:v0.3.12 \
     /opt/hap.py/bin/hap.py \
       /data/truth/HG003_GRCh38_1_22_v4.2.1_benchmark.vcf.gz \
       "/data/output/${CONFIG}_run1/output.vcf.gz" \

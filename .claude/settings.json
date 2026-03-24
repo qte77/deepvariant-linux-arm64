@@ -12,8 +12,12 @@
     "qte77-claude-code-utils": {
       "source": {
         "source": "github",
-        "repo": "qte77/claude-code-utils"
+        "repo": "qte77/claude-code-utils-plugin"
       }
     }
+  },
+  "attribution": {
+    "commit": "Co-Authored-By: Claude <noreply@anthropic.com>",
+    "pr": "Generated with Claude <noreply@anthropic.com>"
   }
 }

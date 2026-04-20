@@ -106,7 +106,7 @@ wheels = [
 
 [[package]]
 name = "deepvariant-linux-arm64"
-version = "1.9.0.post5"
+version = "1.9.0.post8"
 source = { virtual = "." }
 
 [package.dev-dependencies]
